@@ -1,0 +1,11 @@
+{
+  "id": "gpt-task-manager",
+  "name": "GPT Task Manager",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "AI-powered task manager with GPT integration for intelligent task creation, breakdown, and prioritization. Supports voice input and integrates with your existing templates.",
+  "author": "Eddie",
+  "authorUrl": "https://github.com/eddie",
+  "isDesktopOnly": false
+}
+
