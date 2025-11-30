@@ -37,6 +37,10 @@ var DEFAULT_SETTINGS = {
   whisperModel: "whisper-1",
   gptMaxTokens: 2e3,
   gptTemperature: 0.7,
+  // API Reliability defaults
+  apiTimeoutSeconds: 60,
+  apiMaxRetries: 3,
+  rateLimitPerMinute: 10,
   tasksFolder: "500 Plan & Reflect/520 Tasks",
   epicsFolder: "500 Plan & Reflect/510 Epics",
   goalsFolder: "300 Goals & Milestone/Goals",
@@ -48,7 +52,14 @@ var DEFAULT_SETTINGS = {
   enableVoiceInput: true,
   enableSmartSuggestions: true,
   enableAutoBreakdown: true,
+  enableContextCache: true,
+  showConfirmationDialogs: true,
   defaultLanguage: "ko",
+  // UI/Locale
+  uiLocale: "en",
+  // Logging
+  logLevel: "info",
+  enableDebugNotices: false,
   defaultStatus: "backlog",
   defaultPriority: "medium",
   taskCreationPrompt: `You are an expert task manager assistant. Based on the user's input and their current goals/projects context, help create well-structured tasks.
@@ -179,6 +190,28 @@ var GptTaskManagerSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h2", { text: "\u{1F504} API Reliability" });
+    new import_obsidian.Setting(containerEl).setName("Request Timeout").setDesc("Timeout for API requests in seconds (10-120).").addText(
+      (text) => text.setPlaceholder("60").setValue(String(this.plugin.settings.apiTimeoutSeconds)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.apiTimeoutSeconds = isNaN(parsed) ? 60 : Math.max(10, Math.min(120, parsed));
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Max Retries").setDesc("Maximum retry attempts for failed requests (0-5).").addText(
+      (text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.apiMaxRetries)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.apiMaxRetries = isNaN(parsed) ? 3 : Math.max(0, Math.min(5, parsed));
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Rate Limit (per minute)").setDesc("Maximum API requests per minute to prevent abuse (5-30).").addText(
+      (text) => text.setPlaceholder("10").setValue(String(this.plugin.settings.rateLimitPerMinute)).onChange(async (value) => {
+        const parsed = parseInt(value, 10);
+        this.plugin.settings.rateLimitPerMinute = isNaN(parsed) ? 10 : Math.max(5, Math.min(30, parsed));
+        await this.plugin.saveSettings();
+      })
+    );
     containerEl.createEl("h2", { text: "\u{1F4C1} Vault Paths" });
     new import_obsidian.Setting(containerEl).setName("Tasks Folder").setDesc("Path to your tasks folder (e.g., 500 Plan & Reflect/520 Tasks).").addText(
       (text) => text.setPlaceholder("500 Plan & Reflect/520 Tasks").setValue(this.plugin.settings.tasksFolder).onChange(async (value) => {
@@ -232,6 +265,37 @@ var GptTaskManagerSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Default Language").setDesc("Default language for voice transcription and GPT responses.").addDropdown(
       (dropdown) => dropdown.addOption("ko", "\uD55C\uAD6D\uC5B4 (Korean)").addOption("en", "English").addOption("auto", "Auto-detect").setValue(this.plugin.settings.defaultLanguage).onChange(async (value) => {
         this.plugin.settings.defaultLanguage = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("UI Language").setDesc("Language for plugin interface elements.").addDropdown(
+      (dropdown) => dropdown.addOption("en", "English").addOption("ko", "\uD55C\uAD6D\uC5B4 (Korean)").addOption("ja", "\u65E5\u672C\u8A9E (Japanese)").addOption("zh", "\u4E2D\u6587 (Chinese)").setValue(this.plugin.settings.uiLocale).onChange(async (value) => {
+        this.plugin.settings.uiLocale = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Enable Context Cache").setDesc("Cache vault context (goals, projects, epics) for faster performance.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.enableContextCache).onChange(async (value) => {
+        this.plugin.settings.enableContextCache = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Show Confirmation Dialogs").setDesc("Show confirmation before creating tasks.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.showConfirmationDialogs).onChange(async (value) => {
+        this.plugin.settings.showConfirmationDialogs = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    containerEl.createEl("h2", { text: "\u{1F50D} Logging & Debugging" });
+    new import_obsidian.Setting(containerEl).setName("Log Level").setDesc("Minimum log level for console output.").addDropdown(
+      (dropdown) => dropdown.addOption("debug", "Debug (Verbose)").addOption("info", "Info (Normal)").addOption("warn", "Warnings Only").addOption("error", "Errors Only").addOption("none", "Disabled").setValue(this.plugin.settings.logLevel).onChange(async (value) => {
+        this.plugin.settings.logLevel = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Show Debug Notices").setDesc("Show debug information in Obsidian notices (useful for troubleshooting).").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.enableDebugNotices).onChange(async (value) => {
+        this.plugin.settings.enableDebugNotices = value;
         await this.plugin.saveSettings();
       })
     );

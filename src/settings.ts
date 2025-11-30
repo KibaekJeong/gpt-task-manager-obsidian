@@ -19,6 +19,11 @@ export interface GptTaskManagerSettings {
   gptMaxTokens: number;
   gptTemperature: number;
 
+  // API Reliability
+  apiTimeoutSeconds: number;
+  apiMaxRetries: number;
+  rateLimitPerMinute: number;
+
   // Vault Paths
   tasksFolder: string;
   epicsFolder: string;
@@ -35,11 +40,20 @@ export interface GptTaskManagerSettings {
   enableVoiceInput: boolean;
   enableSmartSuggestions: boolean;
   enableAutoBreakdown: boolean;
+  enableContextCache: boolean;
+  showConfirmationDialogs: boolean;
   defaultLanguage: string;
+
+  // UI/Locale
+  uiLocale: string;
 
   // Task Creation Defaults
   defaultStatus: string;
   defaultPriority: string;
+
+  // Logging
+  logLevel: string;
+  enableDebugNotices: boolean;
 
   // GPT Prompts (customizable)
   taskCreationPrompt: string;
@@ -54,6 +68,11 @@ export const DEFAULT_SETTINGS: GptTaskManagerSettings = {
   gptMaxTokens: 2000,
   gptTemperature: 0.7,
 
+  // API Reliability defaults
+  apiTimeoutSeconds: 60,
+  apiMaxRetries: 3,
+  rateLimitPerMinute: 10,
+
   tasksFolder: "500 Plan & Reflect/520 Tasks",
   epicsFolder: "500 Plan & Reflect/510 Epics",
   goalsFolder: "300 Goals & Milestone/Goals",
@@ -67,7 +86,16 @@ export const DEFAULT_SETTINGS: GptTaskManagerSettings = {
   enableVoiceInput: true,
   enableSmartSuggestions: true,
   enableAutoBreakdown: true,
+  enableContextCache: true,
+  showConfirmationDialogs: true,
   defaultLanguage: "ko",
+
+  // UI/Locale
+  uiLocale: "en",
+
+  // Logging
+  logLevel: "info",
+  enableDebugNotices: false,
 
   defaultStatus: "backlog",
   defaultPriority: "medium",
@@ -242,6 +270,51 @@ export class GptTaskManagerSettingTab extends PluginSettingTab {
           })
       );
 
+    // API Reliability Section
+    containerEl.createEl("h2", { text: "🔄 API Reliability" });
+
+    new Setting(containerEl)
+      .setName("Request Timeout")
+      .setDesc("Timeout for API requests in seconds (10-120).")
+      .addText((text: TextComponent) =>
+        text
+          .setPlaceholder("60")
+          .setValue(String(this.plugin.settings.apiTimeoutSeconds))
+          .onChange(async (value: string) => {
+            const parsed = parseInt(value, 10);
+            this.plugin.settings.apiTimeoutSeconds = isNaN(parsed) ? 60 : Math.max(10, Math.min(120, parsed));
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Max Retries")
+      .setDesc("Maximum retry attempts for failed requests (0-5).")
+      .addText((text: TextComponent) =>
+        text
+          .setPlaceholder("3")
+          .setValue(String(this.plugin.settings.apiMaxRetries))
+          .onChange(async (value: string) => {
+            const parsed = parseInt(value, 10);
+            this.plugin.settings.apiMaxRetries = isNaN(parsed) ? 3 : Math.max(0, Math.min(5, parsed));
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Rate Limit (per minute)")
+      .setDesc("Maximum API requests per minute to prevent abuse (5-30).")
+      .addText((text: TextComponent) =>
+        text
+          .setPlaceholder("10")
+          .setValue(String(this.plugin.settings.rateLimitPerMinute))
+          .onChange(async (value: string) => {
+            const parsed = parseInt(value, 10);
+            this.plugin.settings.rateLimitPerMinute = isNaN(parsed) ? 10 : Math.max(5, Math.min(30, parsed));
+            await this.plugin.saveSettings();
+          })
+      );
+
     // Vault Paths Section
     containerEl.createEl("h2", { text: "📁 Vault Paths" });
 
@@ -360,6 +433,78 @@ export class GptTaskManagerSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.defaultLanguage)
           .onChange(async (value: string) => {
             this.plugin.settings.defaultLanguage = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("UI Language")
+      .setDesc("Language for plugin interface elements.")
+      .addDropdown((dropdown: DropdownComponent) =>
+        dropdown
+          .addOption("en", "English")
+          .addOption("ko", "한국어 (Korean)")
+          .addOption("ja", "日本語 (Japanese)")
+          .addOption("zh", "中文 (Chinese)")
+          .setValue(this.plugin.settings.uiLocale)
+          .onChange(async (value: string) => {
+            this.plugin.settings.uiLocale = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Enable Context Cache")
+      .setDesc("Cache vault context (goals, projects, epics) for faster performance.")
+      .addToggle((toggle: ToggleComponent) =>
+        toggle
+          .setValue(this.plugin.settings.enableContextCache)
+          .onChange(async (value: boolean) => {
+            this.plugin.settings.enableContextCache = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Confirmation Dialogs")
+      .setDesc("Show confirmation before creating tasks.")
+      .addToggle((toggle: ToggleComponent) =>
+        toggle
+          .setValue(this.plugin.settings.showConfirmationDialogs)
+          .onChange(async (value: boolean) => {
+            this.plugin.settings.showConfirmationDialogs = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Logging Section
+    containerEl.createEl("h2", { text: "🔍 Logging & Debugging" });
+
+    new Setting(containerEl)
+      .setName("Log Level")
+      .setDesc("Minimum log level for console output.")
+      .addDropdown((dropdown: DropdownComponent) =>
+        dropdown
+          .addOption("debug", "Debug (Verbose)")
+          .addOption("info", "Info (Normal)")
+          .addOption("warn", "Warnings Only")
+          .addOption("error", "Errors Only")
+          .addOption("none", "Disabled")
+          .setValue(this.plugin.settings.logLevel)
+          .onChange(async (value: string) => {
+            this.plugin.settings.logLevel = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Show Debug Notices")
+      .setDesc("Show debug information in Obsidian notices (useful for troubleshooting).")
+      .addToggle((toggle: ToggleComponent) =>
+        toggle
+          .setValue(this.plugin.settings.enableDebugNotices)
+          .onChange(async (value: boolean) => {
+            this.plugin.settings.enableDebugNotices = value;
             await this.plugin.saveSettings();
           })
       );
