@@ -530,6 +530,7 @@ export class TaskConfirmationModal extends Modal {
   private epicName: string | null;
   private onConfirm: () => void;
   private onCancel: () => void;
+  private resolved: boolean = false;
 
   constructor(
     app: App,
@@ -619,6 +620,7 @@ export class TaskConfirmationModal extends Modal {
 
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
@@ -631,6 +633,7 @@ export class TaskConfirmationModal extends Modal {
       cls: "mod-cta"
     });
     confirmBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onConfirm();
     };
@@ -639,6 +642,12 @@ export class TaskConfirmationModal extends Modal {
   onClose(): void {
     const { contentEl } = this;
     contentEl.empty();
+    
+    // If modal was closed via Esc/overlay without explicit confirm/cancel, treat as cancel
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 }
 

@@ -170,6 +170,7 @@ class TaskReviewModal extends Modal {
   private onConfirm: (suggestion: TaskSuggestion, selectedEpic: string | null) => void;
   private onCancel: () => void;
   private selectedEpic: string | null;
+  private resolved: boolean = false;
 
   constructor(
     app: App,
@@ -291,12 +292,14 @@ class TaskReviewModal extends Modal {
 
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
 
     const confirmBtn = buttonsEl.createEl("button", { text: "✓ Create Task", cls: "mod-cta" });
     confirmBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onConfirm(this.suggestion, this.selectedEpic);
     };
@@ -305,6 +308,12 @@ class TaskReviewModal extends Modal {
   onClose(): void {
     const { contentEl } = this;
     contentEl.empty();
+    
+    // If modal was closed via Esc/overlay without explicit confirm/cancel, treat as cancel
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 }
 
@@ -316,6 +325,7 @@ class BreakdownReviewModal extends Modal {
   private epicName: string;
   private onConfirm: (breakdown: TaskBreakdown) => void;
   private onCancel: () => void;
+  private resolved: boolean = false;
 
   constructor(
     app: App,
@@ -372,6 +382,7 @@ class BreakdownReviewModal extends Modal {
 
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
@@ -381,6 +392,7 @@ class BreakdownReviewModal extends Modal {
       cls: "mod-cta"
     });
     confirmBtn.onclick = (): void => {
+      this.resolved = true;
       this.close();
       this.onConfirm(this.breakdown);
     };
@@ -389,6 +401,12 @@ class BreakdownReviewModal extends Modal {
   onClose(): void {
     const { contentEl } = this;
     contentEl.empty();
+    
+    // If modal was closed via Esc/overlay without explicit confirm/cancel, treat as cancel
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 }
 

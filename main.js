@@ -1728,6 +1728,7 @@ function formatDateTime(date) {
 var TaskConfirmationModal = class extends import_obsidian5.Modal {
   constructor(app, summaries, operationType, epicName, onConfirm, onCancel) {
     super(app);
+    this.resolved = false;
     this.summaries = summaries;
     this.operationType = operationType;
     this.epicName = epicName;
@@ -1780,6 +1781,7 @@ var TaskConfirmationModal = class extends import_obsidian5.Modal {
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
@@ -1789,6 +1791,7 @@ var TaskConfirmationModal = class extends import_obsidian5.Modal {
       cls: "mod-cta"
     });
     confirmBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onConfirm();
     };
@@ -1796,6 +1799,10 @@ var TaskConfirmationModal = class extends import_obsidian5.Modal {
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 };
 function showTaskConfirmation(app, summaries, operationType, epicName) {
@@ -2406,6 +2413,7 @@ var EpicSelectModal = class extends import_obsidian8.FuzzySuggestModal {
 var TaskReviewModal = class extends import_obsidian8.Modal {
   constructor(app, suggestion, epics, onConfirm, onCancel) {
     super(app);
+    this.resolved = false;
     this.suggestion = suggestion;
     this.epics = epics;
     this.onConfirm = onConfirm;
@@ -2491,11 +2499,13 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
     const confirmBtn = buttonsEl.createEl("button", { text: "\u2713 Create Task", cls: "mod-cta" });
     confirmBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onConfirm(this.suggestion, this.selectedEpic);
     };
@@ -2503,11 +2513,16 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 };
 var BreakdownReviewModal = class extends import_obsidian8.Modal {
   constructor(app, breakdown, epicName, onConfirm, onCancel) {
     super(app);
+    this.resolved = false;
     this.breakdown = breakdown;
     this.epicName = epicName;
     this.onConfirm = onConfirm;
@@ -2545,6 +2560,7 @@ var BreakdownReviewModal = class extends import_obsidian8.Modal {
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
     const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
     cancelBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onCancel();
     };
@@ -2553,6 +2569,7 @@ var BreakdownReviewModal = class extends import_obsidian8.Modal {
       cls: "mod-cta"
     });
     confirmBtn.onclick = () => {
+      this.resolved = true;
       this.close();
       this.onConfirm(this.breakdown);
     };
@@ -2560,6 +2577,10 @@ var BreakdownReviewModal = class extends import_obsidian8.Modal {
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+    if (!this.resolved) {
+      this.resolved = true;
+      this.onCancel();
+    }
   }
 };
 var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
