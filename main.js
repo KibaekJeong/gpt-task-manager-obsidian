@@ -360,12 +360,27 @@ function extractJsonFromResponse(response) {
   }
   return response;
 }
+function generateFallbackTitle() {
+  const now = /* @__PURE__ */ new Date();
+  return `Task-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+}
+function ensureValidTitle(title, fallbackSource) {
+  const trimmedTitle = (title || "").trim();
+  if (trimmedTitle.length > 0) {
+    return trimmedTitle;
+  }
+  const trimmedFallback = (fallbackSource || "").trim();
+  if (trimmedFallback.length > 0) {
+    return trimmedFallback.substring(0, 50);
+  }
+  return generateFallbackTitle();
+}
 function parseTaskSuggestion(response) {
   try {
     const jsonStr = extractJsonFromResponse(response);
     const parsed = JSON.parse(jsonStr);
     return {
-      title: parsed.title || "",
+      title: ensureValidTitle(parsed.title, parsed.objective),
       objective: parsed.objective || "",
       importance: parsed.importance || "",
       suggestedEpic: parsed.suggestedEpic || null,
@@ -387,10 +402,10 @@ function parseTaskBreakdown(response) {
       return null;
     }
     return {
-      tasks: parsed.tasks.map((task) => {
+      tasks: parsed.tasks.map((task, taskIndex) => {
         var _a;
         return {
-          title: task.title || "",
+          title: ensureValidTitle(task.title, task.objective) || `Subtask-${taskIndex + 1}`,
           objective: task.objective || "",
           priority: task.priority || "medium",
           dependsOn: (_a = task.dependsOn) != null ? _a : null
@@ -405,7 +420,10 @@ function parseTaskBreakdown(response) {
 function fillPromptTemplate(template, values) {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+    result = result.replace(
+      new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+      () => value
+    );
   }
   return result;
 }
@@ -938,32 +956,36 @@ function generateTaskContent(params, settings) {
   const formatString = (value) => {
     if (!value)
       return "";
-    return value;
+    return value.replace(/"/g, '\\"').replace(/\n/g, " ");
   };
   const formatTags = (tags) => {
+    const YAML_INDENT = "  ";
     if (!tags || tags.length === 0) {
-      return "  - tasks";
+      return `${YAML_INDENT}- tasks`;
     }
-    return tags.map((tag) => `  - ${tag.startsWith("#") ? tag.substring(1) : tag}`).join("\n");
+    return tags.map((tag) => `${YAML_INDENT}- ${tag.startsWith("#") ? tag.substring(1) : tag}`).join("\n");
   };
-  const frontmatter = `---
-Type: "[[Tasks]]"
-Area: ${formatLink(params.area)}
-Goal: ${formatLink(params.goal)}
-Project: ${formatLink(params.project)}
-Epic: ${formatLink(params.epic)}
-Status: ${params.status || settings.defaultStatus}
-Priority: ${params.priority || settings.defaultPriority}
-Due: ${params.due || ""}
-Created: "${createdAt}"
-Updated: "${updatedAt}"
-tags:
-${formatTags(params.tags)}
-Cover: 
-Description: "${formatString(params.objective)}"
-Topics: 
-Parent: ${params.parent ? formatLink(params.parent) : "Empty"}
----`;
+  const frontmatterLines = [
+    "---",
+    'Type: "[[Tasks]]"',
+    `Area: ${formatLink(params.area)}`,
+    `Goal: ${formatLink(params.goal)}`,
+    `Project: ${formatLink(params.project)}`,
+    `Epic: ${formatLink(params.epic)}`,
+    `Status: ${params.status || settings.defaultStatus}`,
+    `Priority: ${params.priority || settings.defaultPriority}`,
+    `Due: ${params.due || ""}`,
+    `Created: "${createdAt}"`,
+    `Updated: "${updatedAt}"`,
+    "tags:",
+    formatTags(params.tags),
+    "Cover: ",
+    `Description: "${formatString(params.objective)}"`,
+    "Topics: ",
+    `Parent: ${params.parent ? formatLink(params.parent) : "Empty"}`,
+    "---"
+  ];
+  const frontmatter = frontmatterLines.join("\n");
   const body = `
 ## \u{1F504} Sync
 - [ ] ${params.title}

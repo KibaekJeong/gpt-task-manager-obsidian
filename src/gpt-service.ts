@@ -149,6 +149,35 @@ export function extractJsonFromResponse(response: string): string {
 }
 
 /**
+ * Generate a fallback title based on timestamp
+ */
+function generateFallbackTitle(): string {
+  const now = new Date();
+  return `Task-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * Ensure title is not empty, with fallback options
+ */
+function ensureValidTitle(title: string | undefined | null, fallbackSource?: string): string {
+  // Try the provided title first
+  const trimmedTitle = (title || "").trim();
+  if (trimmedTitle.length > 0) {
+    return trimmedTitle;
+  }
+  
+  // Try the fallback source (e.g., objective or raw input)
+  const trimmedFallback = (fallbackSource || "").trim();
+  if (trimmedFallback.length > 0) {
+    // Use first 50 chars of fallback as title
+    return trimmedFallback.substring(0, 50);
+  }
+  
+  // Generate timestamp-based fallback
+  return generateFallbackTitle();
+}
+
+/**
  * Parse task suggestion from GPT response
  */
 export function parseTaskSuggestion(response: string): TaskSuggestion | null {
@@ -157,7 +186,7 @@ export function parseTaskSuggestion(response: string): TaskSuggestion | null {
     const parsed = JSON.parse(jsonStr);
 
     return {
-      title: parsed.title || "",
+      title: ensureValidTitle(parsed.title, parsed.objective),
       objective: parsed.objective || "",
       importance: parsed.importance || "",
       suggestedEpic: parsed.suggestedEpic || null,
@@ -190,8 +219,8 @@ export function parseTaskBreakdown(response: string): TaskBreakdown | null {
         objective?: string;
         priority?: string;
         dependsOn?: number | null;
-      }) => ({
-        title: task.title || "",
+      }, taskIndex: number) => ({
+        title: ensureValidTitle(task.title, task.objective) || `Subtask-${taskIndex + 1}`,
         objective: task.objective || "",
         priority: task.priority || "medium",
         dependsOn: task.dependsOn ?? null,
@@ -237,6 +266,7 @@ export function parsePrioritizationResult(response: string): PrioritizationResul
 
 /**
  * Fill template placeholders with actual values
+ * Uses function replacer to avoid issues with $ and \ in replacement strings
  */
 export function fillPromptTemplate(
   template: string,
@@ -244,7 +274,12 @@ export function fillPromptTemplate(
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+    // Use function replacer to avoid special replacement patterns like $& or $1
+    // This ensures text containing $ or \ (e.g., "Pay $500") is not mangled
+    result = result.replace(
+      new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+      () => value
+    );
   }
   return result;
 }

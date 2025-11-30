@@ -83,6 +83,7 @@ export function sanitizeFilename(filename: string, fallbackDefault: string = "Un
 
 /**
  * Generate task note content from template and parameters
+ * Note: YAML frontmatter must use spaces for indentation (tabs are not allowed)
  */
 export function generateTaskContent(
   params: CreateTaskParams,
@@ -104,35 +105,43 @@ export function generateTaskContent(
 
   const formatString = (value: string | undefined): string => {
     if (!value) return "";
-    return value;
+    // Escape quotes and newlines for YAML string safety
+    return value.replace(/"/g, '\\"').replace(/\n/g, " ");
   };
 
+  // Format tags with explicit spaces (YAML disallows tabs)
   const formatTags = (tags: string[] | undefined): string => {
+    const YAML_INDENT = "  "; // Two spaces for YAML list items
     if (!tags || tags.length === 0) {
-      return "  - tasks";
+      return `${YAML_INDENT}- tasks`;
     }
-    return tags.map(tag => `  - ${tag.startsWith("#") ? tag.substring(1) : tag}`).join("\n");
+    return tags.map(tag => `${YAML_INDENT}- ${tag.startsWith("#") ? tag.substring(1) : tag}`).join("\n");
   };
 
-  // Build frontmatter
-  const frontmatter = `---
-Type: "[[Tasks]]"
-Area: ${formatLink(params.area)}
-Goal: ${formatLink(params.goal)}
-Project: ${formatLink(params.project)}
-Epic: ${formatLink(params.epic)}
-Status: ${params.status || settings.defaultStatus}
-Priority: ${params.priority || settings.defaultPriority}
-Due: ${params.due || ""}
-Created: "${createdAt}"
-Updated: "${updatedAt}"
-tags:
-${formatTags(params.tags)}
-Cover: 
-Description: "${formatString(params.objective)}"
-Topics: 
-Parent: ${params.parent ? formatLink(params.parent) : "Empty"}
----`;
+  // Build frontmatter with explicit spaces (no tabs allowed in YAML)
+  // Each line starts at column 0 (no indentation for top-level keys)
+  const frontmatterLines = [
+    "---",
+    'Type: "[[Tasks]]"',
+    `Area: ${formatLink(params.area)}`,
+    `Goal: ${formatLink(params.goal)}`,
+    `Project: ${formatLink(params.project)}`,
+    `Epic: ${formatLink(params.epic)}`,
+    `Status: ${params.status || settings.defaultStatus}`,
+    `Priority: ${params.priority || settings.defaultPriority}`,
+    `Due: ${params.due || ""}`,
+    `Created: "${createdAt}"`,
+    `Updated: "${updatedAt}"`,
+    "tags:",
+    formatTags(params.tags),
+    "Cover: ",
+    `Description: "${formatString(params.objective)}"`,
+    "Topics: ",
+    `Parent: ${params.parent ? formatLink(params.parent) : "Empty"}`,
+    "---",
+  ];
+  
+  const frontmatter = frontmatterLines.join("\n");
 
   // Build body content
   const body = `
