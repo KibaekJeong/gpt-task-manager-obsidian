@@ -51,6 +51,10 @@ import {
   CreateTaskParams,
   ensureFolderExists,
   sanitizeFilename,
+  buildBreakdownSummaries,
+  buildSuggestionSummary,
+  showTaskConfirmation,
+  TaskCreationSummary,
 } from "./src/task-creator";
 
 /**
@@ -537,13 +541,29 @@ export default class GptTaskManagerPlugin extends Plugin {
   }
 
   /**
-   * Create task from GPT suggestion
+   * Create task from GPT suggestion with confirmation dialog
    */
   private async createTaskFromSuggestion(
     suggestion: TaskSuggestion,
     epicName: string | null
   ): Promise<void> {
     try {
+      // Build summary for confirmation
+      const summary = buildSuggestionSummary(suggestion, epicName, this.settings);
+      
+      // Show confirmation dialog
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        [summary],
+        "single",
+        epicName
+      );
+
+      if (!confirmed) {
+        new Notice("Task creation cancelled");
+        return;
+      }
+
       let epicMetadata = null;
 
       if (epicName) {
@@ -728,13 +748,29 @@ export default class GptTaskManagerPlugin extends Plugin {
   }
 
   /**
-   * Create tasks from breakdown
+   * Create tasks from breakdown with confirmation dialog
    */
   private async createBreakdownTasks(
     breakdown: TaskBreakdown,
     epic: EpicContext
   ): Promise<void> {
     try {
+      // Build summaries for confirmation
+      const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
+      
+      // Show confirmation dialog
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        summaries,
+        "breakdown",
+        epic.name
+      );
+
+      if (!confirmed) {
+        new Notice("Task breakdown cancelled");
+        return;
+      }
+
       const epicMetadata = {
         area: epic.area,
         goal: epic.goal,
@@ -772,10 +808,32 @@ export default class GptTaskManagerPlugin extends Plugin {
   }
 
   /**
-   * Create a simple task without GPT
+   * Create a simple task without GPT (with confirmation)
    */
   private async createSimpleTask(title: string): Promise<void> {
     try {
+      // Build summary for confirmation
+      const summary: TaskCreationSummary = {
+        title: title,
+        targetFolder: this.settings.tasksFolder,
+        epic: null,
+        priority: this.settings.defaultPriority,
+        dependsOnTask: null,
+      };
+
+      // Show confirmation dialog
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        [summary],
+        "single",
+        null
+      );
+
+      if (!confirmed) {
+        new Notice("Task creation cancelled");
+        return;
+      }
+
       const params: CreateTaskParams = {
         title: title,
         objective: "",

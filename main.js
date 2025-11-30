@@ -912,8 +912,16 @@ async function ensureFolderExists(app, folderPath) {
     console.log(`[GPT Task Manager] Folder creation note: ${folderPath}`, error);
   }
 }
-function sanitizeFilename(filename) {
-  return filename.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().substring(0, 100);
+function sanitizeFilename(filename, fallbackDefault = "Untitled Task") {
+  const sanitized = filename.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().substring(0, 100);
+  if (!sanitized || sanitized.length === 0) {
+    const rawTrimmed = filename.trim().substring(0, 100);
+    if (rawTrimmed && rawTrimmed.length > 0) {
+      return rawTrimmed.replace(/[\\/:]/g, "-");
+    }
+    return fallbackDefault;
+  }
+  return sanitized;
 }
 function generateTaskContent(params, settings) {
   const timestamp = /* @__PURE__ */ new Date();
@@ -1008,20 +1016,17 @@ function generateTaskFromSuggestion(suggestion, epicMetadata, settings) {
   return generateTaskContent(params, settings);
 }
 async function createTaskFile(app, content, title, epicName, settings) {
-  const sanitizedTitle = sanitizeFilename(title);
+  const sanitizedTitle = sanitizeFilename(title, `Task-${Date.now()}`);
   let taskPath;
+  await ensureFolderExists(app, settings.tasksFolder);
   if (epicName) {
-    const epicFolder = `${settings.tasksFolder}/active epic folder/${sanitizeFilename(epicName)}`;
+    const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+    const epicFolder = `${settings.tasksFolder}/active epic folder/${sanitizedEpicName}`;
+    await ensureFolderExists(app, `${settings.tasksFolder}/active epic folder`);
     await ensureFolderExists(app, epicFolder);
     taskPath = `${epicFolder}/${sanitizedTitle}.md`;
   } else {
-    const inboxPath = `${settings.tasksFolder}/inbox.md`;
-    const hasInbox = app.vault.getAbstractFileByPath(inboxPath);
-    if (hasInbox) {
-      taskPath = `${settings.tasksFolder}/${sanitizedTitle}.md`;
-    } else {
-      taskPath = `${settings.tasksFolder}/${sanitizedTitle}.md`;
-    }
+    taskPath = `${settings.tasksFolder}/${sanitizedTitle}.md`;
   }
   const normalizedPath = (0, import_obsidian5.normalizePath)(taskPath);
   const existingFile = app.vault.getAbstractFileByPath(normalizedPath);
@@ -1039,8 +1044,22 @@ async function createTaskFile(app, content, title, epicName, settings) {
 }
 async function createTasksFromBreakdown(app, breakdown, epicName, epicMetadata, settings) {
   const createdFiles = [];
-  let previousTask = null;
-  for (const task of breakdown.tasks) {
+  const indexToBasename = /* @__PURE__ */ new Map();
+  await ensureFolderExists(app, settings.tasksFolder);
+  if (epicName) {
+    const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+    await ensureFolderExists(app, `${settings.tasksFolder}/active epic folder`);
+    await ensureFolderExists(app, `${settings.tasksFolder}/active epic folder/${sanitizedEpicName}`);
+  }
+  for (let taskIndex = 0; taskIndex < breakdown.tasks.length; taskIndex++) {
+    const task = breakdown.tasks[taskIndex];
+    let parentBasename = void 0;
+    if (task.dependsOn !== null && task.dependsOn !== void 0) {
+      const dependsOnIndex = task.dependsOn;
+      if (dependsOnIndex >= 0 && dependsOnIndex < taskIndex && indexToBasename.has(dependsOnIndex)) {
+        parentBasename = indexToBasename.get(dependsOnIndex);
+      }
+    }
     const params = {
       title: task.title,
       objective: task.objective,
@@ -1049,20 +1068,63 @@ async function createTasksFromBreakdown(app, breakdown, epicName, epicMetadata, 
       project: (epicMetadata == null ? void 0 : epicMetadata.project) || "",
       epic: epicName,
       priority: task.priority,
-      parent: task.dependsOn !== null && previousTask ? previousTask : void 0,
+      parent: parentBasename,
       tags: ["tasks"]
     };
     const content = generateTaskContent(params, settings);
     try {
       const file = await createTaskFile(app, content, task.title, epicName, settings);
       createdFiles.push(file);
-      previousTask = file.basename;
+      indexToBasename.set(taskIndex, file.basename);
     } catch (error) {
       console.error(`[GPT Task Manager] Failed to create task: ${task.title}`, error);
       new import_obsidian5.Notice(`Failed to create task: ${task.title}`);
     }
   }
   return createdFiles;
+}
+function buildBreakdownSummaries(breakdown, epicName, settings) {
+  const summaries = [];
+  const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+  const targetFolder = `${settings.tasksFolder}/active epic folder/${sanitizedEpicName}`;
+  const indexToTitle = /* @__PURE__ */ new Map();
+  breakdown.tasks.forEach((task, index) => {
+    indexToTitle.set(index, task.title);
+  });
+  for (let taskIndex = 0; taskIndex < breakdown.tasks.length; taskIndex++) {
+    const task = breakdown.tasks[taskIndex];
+    let dependsOnTask = null;
+    if (task.dependsOn !== null && task.dependsOn !== void 0) {
+      const dependsOnIndex = task.dependsOn;
+      if (dependsOnIndex >= 0 && dependsOnIndex < breakdown.tasks.length && indexToTitle.has(dependsOnIndex)) {
+        dependsOnTask = indexToTitle.get(dependsOnIndex) || null;
+      }
+    }
+    summaries.push({
+      title: task.title,
+      targetFolder,
+      epic: epicName,
+      priority: task.priority || settings.defaultPriority,
+      dependsOnTask
+    });
+  }
+  return summaries;
+}
+function buildSuggestionSummary(suggestion, epicName, settings) {
+  let targetFolder;
+  if (epicName) {
+    const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+    targetFolder = `${settings.tasksFolder}/active epic folder/${sanitizedEpicName}`;
+  } else {
+    targetFolder = settings.tasksFolder;
+  }
+  return {
+    title: suggestion.title,
+    targetFolder,
+    epic: epicName,
+    priority: suggestion.priority || settings.defaultPriority,
+    dependsOnTask: null
+  };
 }
 function formatDateTime(date) {
   const year = date.getFullYear();
@@ -1071,6 +1133,91 @@ function formatDateTime(date) {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+var TaskConfirmationModal = class extends import_obsidian5.Modal {
+  constructor(app, summaries, operationType, epicName, onConfirm, onCancel) {
+    super(app);
+    this.summaries = summaries;
+    this.operationType = operationType;
+    this.epicName = epicName;
+    this.onConfirm = onConfirm;
+    this.onCancel = onCancel;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("gpt-task-manager-confirmation-modal");
+    const headerText = this.operationType === "breakdown" ? `\u{1F4CB} Confirm Task Creation (${this.summaries.length} tasks)` : "\u{1F4CB} Confirm Task Creation";
+    contentEl.createEl("h2", { text: headerText });
+    const descText = this.operationType === "breakdown" ? "The following tasks will be created:" : "The following task will be created:";
+    contentEl.createEl("p", { text: descText, cls: "modal-description" });
+    const listEl = contentEl.createDiv({ cls: "confirmation-task-list" });
+    for (let summaryIndex = 0; summaryIndex < this.summaries.length; summaryIndex++) {
+      const summary = this.summaries[summaryIndex];
+      const itemEl = listEl.createDiv({ cls: "confirmation-task-item" });
+      const titleRow = itemEl.createDiv({ cls: "task-title-row" });
+      if (this.operationType === "breakdown") {
+        titleRow.createEl("span", {
+          text: `${summaryIndex + 1}. `,
+          cls: "task-number"
+        });
+      }
+      titleRow.createEl("span", { text: summary.title, cls: "task-title" });
+      const detailsEl = itemEl.createDiv({ cls: "task-details" });
+      detailsEl.createEl("span", {
+        text: summary.priority,
+        cls: `priority-badge priority-${summary.priority}`
+      });
+      if (summary.epic) {
+        detailsEl.createEl("span", {
+          text: `Epic: ${summary.epic}`,
+          cls: "task-epic"
+        });
+      }
+      if (summary.dependsOnTask) {
+        detailsEl.createEl("span", {
+          text: `\u2192 Depends on: ${summary.dependsOnTask}`,
+          cls: "task-dependency"
+        });
+      }
+      const folderEl = itemEl.createDiv({ cls: "task-folder" });
+      folderEl.createEl("span", {
+        text: `\u{1F4C1} ${summary.targetFolder}`,
+        cls: "folder-path"
+      });
+    }
+    const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
+    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    cancelBtn.onclick = () => {
+      this.close();
+      this.onCancel();
+    };
+    const confirmText = this.operationType === "breakdown" ? `\u2713 Create ${this.summaries.length} Tasks` : "\u2713 Create Task";
+    const confirmBtn = buttonsEl.createEl("button", {
+      text: confirmText,
+      cls: "mod-cta"
+    });
+    confirmBtn.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+function showTaskConfirmation(app, summaries, operationType, epicName) {
+  return new Promise((resolve) => {
+    new TaskConfirmationModal(
+      app,
+      summaries,
+      operationType,
+      epicName,
+      () => resolve(true),
+      () => resolve(false)
+    ).open();
+  });
 }
 
 // main.ts
@@ -1425,10 +1572,21 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
     }
   }
   /**
-   * Create task from GPT suggestion
+   * Create task from GPT suggestion with confirmation dialog
    */
   async createTaskFromSuggestion(suggestion, epicName) {
     try {
+      const summary = buildSuggestionSummary(suggestion, epicName, this.settings);
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        [summary],
+        "single",
+        epicName
+      );
+      if (!confirmed) {
+        new import_obsidian6.Notice("Task creation cancelled");
+        return;
+      }
       let epicMetadata = null;
       if (epicName) {
         epicMetadata = await getEpicMetadata(this.app, epicName, this.settings.epicsFolder);
@@ -1571,10 +1729,21 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
     }
   }
   /**
-   * Create tasks from breakdown
+   * Create tasks from breakdown with confirmation dialog
    */
   async createBreakdownTasks(breakdown, epic) {
     try {
+      const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        summaries,
+        "breakdown",
+        epic.name
+      );
+      if (!confirmed) {
+        new import_obsidian6.Notice("Task breakdown cancelled");
+        return;
+      }
       const epicMetadata = {
         area: epic.area,
         goal: epic.goal,
@@ -1605,10 +1774,27 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
     }).open();
   }
   /**
-   * Create a simple task without GPT
+   * Create a simple task without GPT (with confirmation)
    */
   async createSimpleTask(title) {
     try {
+      const summary = {
+        title,
+        targetFolder: this.settings.tasksFolder,
+        epic: null,
+        priority: this.settings.defaultPriority,
+        dependsOnTask: null
+      };
+      const confirmed = await showTaskConfirmation(
+        this.app,
+        [summary],
+        "single",
+        null
+      );
+      if (!confirmed) {
+        new import_obsidian6.Notice("Task creation cancelled");
+        return;
+      }
       const params = {
         title,
         objective: "",
