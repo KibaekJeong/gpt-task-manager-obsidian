@@ -57,6 +57,13 @@ import {
   TaskCreationSummary,
 } from "./src/task-creator";
 
+// New infrastructure imports
+import { CancellationToken, setRateLimitConfig } from "./src/api-client";
+import { logger, LogLevel } from "./src/logger";
+import { ContextCache } from "./src/cache";
+import { setLocale, t, SupportedLocale } from "./src/i18n";
+import { showNotice, showErrorNotice, showSuccessNotice } from "./src/ui-components";
+
 /**
  * Modal for quick task input
  */
@@ -390,11 +397,14 @@ class BreakdownReviewModal extends Modal {
  */
 export default class GptTaskManagerPlugin extends Plugin {
   settings: GptTaskManagerSettings = DEFAULT_SETTINGS;
+  private contextCache: ContextCache | null = null;
+  private activeCancellationToken: CancellationToken | null = null;
 
   async onload(): Promise<void> {
-    console.log("[GPT Task Manager] Loading plugin...");
+    logger.info("Plugin", "Loading GPT Task Manager plugin...");
 
     await this.loadSettings();
+    this.initializeInfrastructure();
 
     // Add settings tab
     this.addSettingTab(new GptTaskManagerSettingTab(this.app, this));
@@ -441,11 +451,22 @@ export default class GptTaskManagerPlugin extends Plugin {
       },
     });
 
-    console.log("[GPT Task Manager] Plugin loaded successfully");
+    logger.info("Plugin", "GPT Task Manager loaded successfully");
   }
 
   onunload(): void {
-    console.log("[GPT Task Manager] Unloading plugin...");
+    logger.info("Plugin", "Unloading GPT Task Manager plugin...");
+    
+    // Cleanup
+    if (this.contextCache) {
+      this.contextCache.destroy();
+      this.contextCache = null;
+    }
+    
+    // Cancel any active operations
+    if (this.activeCancellationToken) {
+      this.activeCancellationToken.cancel("Plugin unloading");
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -455,6 +476,97 @@ export default class GptTaskManagerPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    // Re-initialize infrastructure when settings change
+    this.initializeInfrastructure();
+  }
+
+  /**
+   * Initialize infrastructure based on settings
+   */
+  private initializeInfrastructure(): void {
+    // Set log level
+    const logLevelMap: Record<string, LogLevel> = {
+      debug: LogLevel.DEBUG,
+      info: LogLevel.INFO,
+      warn: LogLevel.WARN,
+      error: LogLevel.ERROR,
+      none: LogLevel.NONE,
+    };
+    logger.setLogLevel(logLevelMap[this.settings.logLevel] || LogLevel.INFO);
+
+    // Set locale
+    setLocale(this.settings.uiLocale as SupportedLocale);
+
+    // Configure rate limiter
+    setRateLimitConfig(this.settings.rateLimitPerMinute, 60000);
+
+    // Initialize context cache if enabled
+    if (this.settings.enableContextCache) {
+      if (!this.contextCache) {
+        this.contextCache = new ContextCache(this.app, {
+          ttlMs: 60000, // 1 minute cache
+          maxEntries: 50,
+          debounceMs: 500,
+        });
+      }
+    } else if (this.contextCache) {
+      this.contextCache.destroy();
+      this.contextCache = null;
+    }
+
+    logger.debug("Plugin", "Infrastructure initialized", {
+      logLevel: this.settings.logLevel,
+      locale: this.settings.uiLocale,
+      cacheEnabled: this.settings.enableContextCache,
+      rateLimitPerMinute: this.settings.rateLimitPerMinute,
+    });
+  }
+
+  /**
+   * Create a new cancellation token for an operation
+   */
+  private createCancellationToken(): CancellationToken {
+    // Cancel any previous operation
+    if (this.activeCancellationToken) {
+      this.activeCancellationToken.cancel("New operation started");
+    }
+    this.activeCancellationToken = new CancellationToken();
+    return this.activeCancellationToken;
+  }
+
+  /**
+   * Get user context (cached if enabled)
+   */
+  private getUserContext(): UserContext {
+    if (this.contextCache && this.settings.enableContextCache) {
+      const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
+      
+      const goals = this.contextCache.getGoals(cacheKey, () =>
+        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).goals
+      ) as UserContext["goals"];
+      
+      const projects = this.contextCache.getProjects(cacheKey, () =>
+        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).projects
+      ) as UserContext["projects"];
+      
+      const epics = this.contextCache.getEpics(cacheKey, () =>
+        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).epics
+      ) as UserContext["epics"];
+      
+      const activeTasks = this.contextCache.getTasks(cacheKey, () =>
+        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).activeTasks
+      ) as UserContext["activeTasks"];
+
+      return { goals, projects, epics, activeTasks };
+    }
+
+    return loadUserContext(
+      this.app,
+      this.settings.goalsFolder,
+      this.settings.projectsFolder,
+      this.settings.epicsFolder,
+      this.settings.tasksFolder
+    );
   }
 
   /**
@@ -462,7 +574,7 @@ export default class GptTaskManagerPlugin extends Plugin {
    */
   private showQuickTaskModal(): void {
     if (!this.settings.openAIApiKey) {
-      new Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
 
@@ -475,18 +587,12 @@ export default class GptTaskManagerPlugin extends Plugin {
    * Process quick task input with GPT
    */
   private async processQuickTask(input: string): Promise<void> {
-    new Notice("🤖 Processing with GPT...");
+    showNotice(t("progressProcessing"));
+    const cancellationToken = this.createCancellationToken();
 
     try {
-      // Load user context
-      const context = loadUserContext(
-        this.app,
-        this.settings.goalsFolder,
-        this.settings.projectsFolder,
-        this.settings.epicsFolder,
-        this.settings.tasksFolder
-      );
-
+      // Load user context (cached if enabled)
+      const context = this.getUserContext();
       const formattedContext = formatContextForPrompt(context);
 
       // Build prompt
@@ -497,18 +603,27 @@ export default class GptTaskManagerPlugin extends Plugin {
         input: input,
       });
 
-      // Call GPT
+      // Call GPT with cancellation and timeout support
       const result = await callGptApi(
         prompt,
         "You are a helpful task management assistant that creates well-structured tasks.",
         this.settings.openAIApiKey,
         this.settings.gptModel,
         this.settings.gptMaxTokens,
-        this.settings.gptTemperature
+        this.settings.gptTemperature,
+        cancellationToken,
+        this.settings.apiTimeoutSeconds,
+        this.settings.apiMaxRetries
       );
 
+      // Check if cancelled
+      if (result.cancelled) {
+        showNotice(t("taskCreationCancelled"));
+        return;
+      }
+
       if (!result.success || !result.content) {
-        new Notice(`GPT Error: ${result.errorMessage || "Unknown error"}`);
+        showErrorNotice(result.errorMessage || "Unknown error");
         return;
       }
 
@@ -516,7 +631,7 @@ export default class GptTaskManagerPlugin extends Plugin {
       const suggestion = parseTaskSuggestion(result.content);
 
       if (!suggestion) {
-        new Notice("Failed to parse GPT response. Creating simple task.");
+        showNotice(t("errorParsingFailed"));
         await this.createSimpleTask(input);
         return;
       }
@@ -530,13 +645,13 @@ export default class GptTaskManagerPlugin extends Plugin {
           await this.createTaskFromSuggestion(finalSuggestion, selectedEpic);
         },
         () => {
-          new Notice("Task creation cancelled");
+          showNotice(t("taskCreationCancelled"));
         }
       ).open();
 
     } catch (error) {
-      console.error("[GPT Task Manager] Quick task error:", error);
-      new Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Quick task error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
 
@@ -595,12 +710,12 @@ export default class GptTaskManagerPlugin extends Plugin {
    */
   private startVoiceTask(): void {
     if (!this.settings.openAIApiKey) {
-      new Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
 
     if (!this.settings.enableVoiceInput) {
-      new Notice("Voice input is disabled. Enable it in settings.");
+      showErrorNotice(t("errorVoiceDisabled"));
       return;
     }
 
@@ -610,7 +725,7 @@ export default class GptTaskManagerPlugin extends Plugin {
         await this.processVoiceTask(audioBlob);
       },
       () => {
-        new Notice("Recording cancelled");
+        showNotice(t("taskCreationCancelled"));
       }
     ).open();
   }
@@ -619,23 +734,25 @@ export default class GptTaskManagerPlugin extends Plugin {
    * Process voice recording into task
    */
   private async processVoiceTask(audioBlob: Blob): Promise<void> {
-    new Notice("🎤 Transcribing...");
+    showNotice(t("progressTranscribing"));
+    const cancellationToken = this.createCancellationToken();
 
     try {
-      // Transcribe audio
+      // Transcribe audio with cancellation support
       const transcription = await transcribeAudio(
         audioBlob,
         this.settings.openAIApiKey,
         this.settings.whisperModel,
-        this.settings.defaultLanguage === "auto" ? undefined : this.settings.defaultLanguage
+        this.settings.defaultLanguage === "auto" ? undefined : this.settings.defaultLanguage,
+        cancellationToken
       );
 
       if (!transcription) {
-        new Notice("Transcription returned empty result");
+        showErrorNotice("Transcription returned empty result");
         return;
       }
 
-      new Notice(`📝 Transcribed: "${transcription.substring(0, 50)}..."`);
+      showNotice(`📝 Transcribed: "${transcription.substring(0, 50)}..."`);
 
       // Parse voice input for quick extraction
       const voiceInput = parseVoiceTaskInput(transcription);
@@ -649,8 +766,14 @@ export default class GptTaskManagerPlugin extends Plugin {
       }
 
     } catch (error) {
-      console.error("[GPT Task Manager] Voice task error:", error);
-      new Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Voice task error", { error: error instanceof Error ? error.message : "Unknown" });
+      
+      // Check if it was a cancellation
+      if (error instanceof Error && error.message.includes("cancelled")) {
+        showNotice(t("taskCreationCancelled"));
+      } else {
+        showErrorNotice(error instanceof Error ? error.message : "Unknown error");
+      }
     }
   }
 
@@ -659,14 +782,14 @@ export default class GptTaskManagerPlugin extends Plugin {
    */
   private showEpicBreakdownModal(): void {
     if (!this.settings.openAIApiKey) {
-      new Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
 
     const epics = loadEpics(this.app, this.settings.epicsFolder);
 
     if (epics.length === 0) {
-      new Notice("No epics found in your vault.");
+      showErrorNotice(t("errorNoEpics"));
       return;
     }
 
@@ -679,7 +802,8 @@ export default class GptTaskManagerPlugin extends Plugin {
    * Break down an epic into tasks using GPT
    */
   private async breakdownEpic(epic: EpicContext): Promise<void> {
-    new Notice(`🤖 Breaking down: ${epic.name}...`);
+    showNotice(t("breakdownCreating", { epic: epic.name }));
+    const cancellationToken = this.createCancellationToken();
 
     try {
       // Read epic content for more context
@@ -705,18 +829,27 @@ export default class GptTaskManagerPlugin extends Plugin {
         area: epic.area,
       });
 
-      // Call GPT
+      // Call GPT with cancellation and timeout support
       const result = await callGptApi(
         prompt,
         "You are an expert project manager that breaks down complex work into actionable tasks.",
         this.settings.openAIApiKey,
         this.settings.gptModel,
         this.settings.gptMaxTokens,
-        this.settings.gptTemperature
+        this.settings.gptTemperature,
+        cancellationToken,
+        this.settings.apiTimeoutSeconds,
+        this.settings.apiMaxRetries
       );
 
+      // Check if cancelled
+      if (result.cancelled) {
+        showNotice(t("taskCreationCancelled"));
+        return;
+      }
+
       if (!result.success || !result.content) {
-        new Notice(`GPT Error: ${result.errorMessage || "Unknown error"}`);
+        showErrorNotice(result.errorMessage || "Unknown error");
         return;
       }
 
@@ -724,7 +857,7 @@ export default class GptTaskManagerPlugin extends Plugin {
       const breakdown = parseTaskBreakdown(result.content);
 
       if (!breakdown || breakdown.tasks.length === 0) {
-        new Notice("Failed to parse task breakdown from GPT response.");
+        showErrorNotice("Failed to parse task breakdown from GPT response.");
         return;
       }
 
@@ -737,13 +870,13 @@ export default class GptTaskManagerPlugin extends Plugin {
           await this.createBreakdownTasks(finalBreakdown, epic);
         },
         () => {
-          new Notice("Breakdown cancelled");
+          showNotice(t("taskCreationCancelled"));
         }
       ).open();
 
     } catch (error) {
-      console.error("[GPT Task Manager] Epic breakdown error:", error);
-      new Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Epic breakdown error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
 
@@ -755,20 +888,21 @@ export default class GptTaskManagerPlugin extends Plugin {
     epic: EpicContext
   ): Promise<void> {
     try {
-      // Build summaries for confirmation
-      const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
-      
-      // Show confirmation dialog
-      const confirmed = await showTaskConfirmation(
-        this.app,
-        summaries,
-        "breakdown",
-        epic.name
-      );
+      // Build summaries for confirmation (if enabled)
+      if (this.settings.showConfirmationDialogs) {
+        const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
+        
+        const confirmed = await showTaskConfirmation(
+          this.app,
+          summaries,
+          "breakdown",
+          epic.name
+        );
 
-      if (!confirmed) {
-        new Notice("Task breakdown cancelled");
-        return;
+        if (!confirmed) {
+          showNotice(t("taskCreationCancelled"));
+          return;
+        }
       }
 
       const epicMetadata = {
@@ -785,7 +919,7 @@ export default class GptTaskManagerPlugin extends Plugin {
         this.settings
       );
 
-      new Notice(`✅ Created ${files.length} tasks for ${epic.name}`);
+      showSuccessNotice(t("taskCreated", { title: `${files.length} tasks for ${epic.name}` }));
 
       // Open the first task
       if (files.length > 0) {
@@ -793,8 +927,8 @@ export default class GptTaskManagerPlugin extends Plugin {
       }
 
     } catch (error) {
-      console.error("[GPT Task Manager] Breakdown task creation error:", error);
-      new Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Breakdown task creation error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
 

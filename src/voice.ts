@@ -1,4 +1,8 @@
-import { Modal, App, Notice, requestUrl } from "obsidian";
+import { Modal, App, Notice } from "obsidian";
+import { callWhisperApi, CancellationToken } from "./api-client";
+import { logger } from "./logger";
+
+const CATEGORY = "Voice";
 
 /**
  * Result from voice transcription parsing
@@ -10,6 +14,16 @@ export interface VoiceTaskInput {
   epic: string;
   project: string;
   priority: string;
+}
+
+/**
+ * Result from transcription
+ */
+export interface TranscriptionResult {
+  success: boolean;
+  text: string | null;
+  error: string | null;
+  cancelled: boolean;
 }
 
 /**
@@ -212,135 +226,96 @@ export class VoiceRecordingModal extends Modal {
 }
 
 /**
- * Transcribe audio using OpenAI Whisper API
+ * Transcribe audio using OpenAI Whisper API with cancellation support
  */
 export async function transcribeAudio(
   audioBlob: Blob,
   apiKey: string,
   model: string = "whisper-1",
-  language?: string
+  language?: string,
+  cancellationToken?: CancellationToken
 ): Promise<string> {
-  try {
-    const arrayBuffer = await audioBlob.arrayBuffer();
+  logger.info(CATEGORY, "Starting audio transcription", { 
+    blobSize: audioBlob.size,
+    model,
+    language: language || "auto"
+  });
 
-    const mimeType = audioBlob.type || "audio/webm";
-    const extension = getExtensionFromMimeType(mimeType);
-    const filename = `recording.${extension}`;
+  const response = await callWhisperApi(
+    audioBlob,
+    apiKey,
+    model,
+    language,
+    cancellationToken
+  );
 
-    const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
-
-    const bodyParts: (string | ArrayBuffer)[] = [];
-
-    // File field
-    bodyParts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-      `Content-Type: ${mimeType}\r\n\r\n`
-    );
-    bodyParts.push(arrayBuffer);
-    bodyParts.push("\r\n");
-
-    // Model field
-    bodyParts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="model"\r\n\r\n` +
-      `${model}\r\n`
-    );
-
-    // Language field
-    if (language && language !== "auto") {
-      bodyParts.push(
-        `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="language"\r\n\r\n` +
-        `${language}\r\n`
-      );
-    }
-
-    // Response format
-    bodyParts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="response_format"\r\n\r\n` +
-      `text\r\n`
-    );
-
-    bodyParts.push(`--${boundary}--\r\n`);
-
-    const body = await combineMultipartBody(bodyParts);
-
-    const response = await requestUrl({
-      url: "https://api.openai.com/v1/audio/transcriptions",
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      },
-      body: body,
-      throw: false,
-    });
-
-    if (response.status !== 200) {
-      let errorDetail = "";
-      try {
-        const errorBody = JSON.parse(response.text);
-        errorDetail = errorBody.error?.message || errorBody.message || response.text;
-      } catch {
-        errorDetail = response.text.substring(0, 200);
-      }
-      throw new Error(`Whisper API error (${response.status}): ${errorDetail}`);
-    }
-
-    return response.text.trim();
-
-  } catch (error) {
-    console.error("[GPT Task Manager] Transcription failed:", error);
-    throw error;
+  if (response.cancelled) {
+    logger.info(CATEGORY, "Transcription was cancelled");
+    throw new Error("Transcription cancelled");
   }
+
+  if (!response.success) {
+    logger.error(CATEGORY, "Transcription failed", { error: response.error });
+    throw new Error(response.error || "Transcription failed");
+  }
+
+  const text = response.data?.text;
+  if (!text) {
+    logger.warn(CATEGORY, "Transcription returned empty text");
+    throw new Error("Transcription returned empty result");
+  }
+
+  logger.info(CATEGORY, "Transcription successful", { textLength: text.length });
+  return text.trim();
 }
 
 /**
- * Get file extension from MIME type
+ * Transcribe audio with full result object (includes cancellation status)
  */
-function getExtensionFromMimeType(mimeType: string): string {
-  const mimeToExt: Record<string, string> = {
-    "audio/webm": "webm",
-    "audio/webm;codecs=opus": "webm",
-    "audio/ogg": "ogg",
-    "audio/ogg;codecs=opus": "ogg",
-    "audio/mp4": "m4a",
-    "audio/mpeg": "mp3",
-    "audio/wav": "wav",
+export async function transcribeAudioWithResult(
+  audioBlob: Blob,
+  apiKey: string,
+  model: string = "whisper-1",
+  language?: string,
+  cancellationToken?: CancellationToken
+): Promise<TranscriptionResult> {
+  logger.info(CATEGORY, "Starting audio transcription", { 
+    blobSize: audioBlob.size,
+    model
+  });
+
+  const response = await callWhisperApi(
+    audioBlob,
+    apiKey,
+    model,
+    language,
+    cancellationToken
+  );
+
+  if (response.cancelled) {
+    return {
+      success: false,
+      text: null,
+      error: "Transcription cancelled",
+      cancelled: true,
+    };
+  }
+
+  if (!response.success) {
+    return {
+      success: false,
+      text: null,
+      error: response.error || "Transcription failed",
+      cancelled: false,
+    };
+  }
+
+  return {
+    success: true,
+    text: response.data?.text || null,
+    error: null,
+    cancelled: false,
   };
-  return mimeToExt[mimeType] || "webm";
-}
-
-/**
- * Combine multipart body parts into a single ArrayBuffer
- */
-async function combineMultipartBody(parts: (string | ArrayBuffer)[]): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const buffers: ArrayBuffer[] = [];
-
-  for (const part of parts) {
-    if (typeof part === "string") {
-      buffers.push(encoder.encode(part).buffer);
-    } else {
-      buffers.push(part);
-    }
-  }
-
-  let totalLength = 0;
-  for (const buf of buffers) {
-    totalLength += buf.byteLength;
-  }
-
-  const combined = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const buf of buffers) {
-    combined.set(new Uint8Array(buf), offset);
-    offset += buf.byteLength;
-  }
-
-  return combined.buffer;
 }
 
 /**

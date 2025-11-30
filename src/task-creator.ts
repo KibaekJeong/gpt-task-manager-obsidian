@@ -39,21 +39,54 @@ export interface ConfirmationResult {
 }
 
 /**
- * Ensure a folder exists, creating it if necessary
+ * Ensure a folder exists, recursively creating parent directories if needed
+ * Surfaces clear errors if folder creation fails
  */
 export async function ensureFolderExists(app: App, folderPath: string): Promise<void> {
   const normalizedPath = normalizePath(folderPath);
+  
+  // Check if already exists
   const existingFolder = app.vault.getAbstractFileByPath(normalizedPath);
-
   if (existingFolder && existingFolder instanceof TFolder) {
     return;
   }
 
-  try {
-    await app.vault.createFolder(normalizedPath);
-  } catch (error) {
-    // Folder might already exist or path might have been created by another call
-    console.log(`[GPT Task Manager] Folder creation note: ${folderPath}`, error);
+  // Build list of folders to create (from root to target)
+  const pathParts = normalizedPath.split("/").filter(part => part.length > 0);
+  const foldersToCreate: string[] = [];
+  let currentPath = "";
+
+  for (const part of pathParts) {
+    currentPath = currentPath ? `${currentPath}/${part}` : part;
+    const existing = app.vault.getAbstractFileByPath(currentPath);
+    
+    if (!existing) {
+      foldersToCreate.push(currentPath);
+    } else if (existing instanceof TFile) {
+      // A file exists at this path - can't create folder
+      throw new Error(`Cannot create folder "${currentPath}": a file exists at this path`);
+    }
+  }
+
+  // Create folders in order (parent first)
+  for (const folderToCreate of foldersToCreate) {
+    try {
+      // Double-check it doesn't exist (race condition guard)
+      const recheck = app.vault.getAbstractFileByPath(folderToCreate);
+      if (!recheck) {
+        await app.vault.createFolder(folderToCreate);
+      }
+    } catch (error) {
+      // Check if folder was created by a concurrent call
+      const afterError = app.vault.getAbstractFileByPath(folderToCreate);
+      if (afterError && afterError instanceof TFolder) {
+        // Created by concurrent call, continue
+        continue;
+      }
+      // Actual error - surface it
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to create folder "${folderToCreate}": ${errorMessage}`);
+    }
   }
 }
 
@@ -263,7 +296,9 @@ export async function createTaskFile(
 
 /**
  * Create multiple tasks from a breakdown with proper dependency mapping
- * Maps GPT task indices to created file basenames for accurate parent links
+ * Uses two-pass approach to handle forward/out-of-order dependencies:
+ * 1. First pass: Create all files (with backward dependencies resolved)
+ * 2. Second pass: Update files with forward dependencies
  */
 export async function createTasksFromBreakdown(
   app: App,
@@ -277,8 +312,10 @@ export async function createTasksFromBreakdown(
   settings: GptTaskManagerSettings
 ): Promise<TFile[]> {
   const createdFiles: TFile[] = [];
-  // Map from task index (0-based) to created file basename
-  const indexToBasename: Map<number, string> = new Map();
+  // Map from task index (0-based) to created file
+  const indexToFile: Map<number, TFile> = new Map();
+  // Track tasks with forward dependencies (dependsOn >= taskIndex)
+  const forwardDependencies: { taskIndex: number; dependsOnIndex: number }[] = [];
 
   // Ensure base folders exist before creating any tasks
   await ensureFolderExists(app, settings.tasksFolder);
@@ -288,18 +325,29 @@ export async function createTasksFromBreakdown(
     await ensureFolderExists(app, `${settings.tasksFolder}/active epic folder/${sanitizedEpicName}`);
   }
 
+  // PASS 1: Create all files, resolving backward dependencies only
   for (let taskIndex = 0; taskIndex < breakdown.tasks.length; taskIndex++) {
     const task = breakdown.tasks[taskIndex];
     
-    // Resolve dependency: map dependsOn index to actual created file basename
+    // Resolve dependency
     let parentBasename: string | undefined = undefined;
     if (task.dependsOn !== null && task.dependsOn !== undefined) {
       const dependsOnIndex = task.dependsOn;
-      // Check if the referenced index is valid and has been created
-      if (dependsOnIndex >= 0 && dependsOnIndex < taskIndex && indexToBasename.has(dependsOnIndex)) {
-        parentBasename = indexToBasename.get(dependsOnIndex);
+      
+      // Validate index is in range
+      if (dependsOnIndex >= 0 && dependsOnIndex < breakdown.tasks.length) {
+        if (dependsOnIndex < taskIndex) {
+          // Backward dependency - resolve now
+          const dependsOnFile = indexToFile.get(dependsOnIndex);
+          if (dependsOnFile) {
+            parentBasename = dependsOnFile.basename;
+          }
+        } else if (dependsOnIndex > taskIndex) {
+          // Forward dependency - mark for second pass
+          forwardDependencies.push({ taskIndex, dependsOnIndex });
+        }
+        // Self-reference (dependsOnIndex === taskIndex) is ignored
       }
-      // If dependsOn references an invalid or future index, leave parent unset
     }
 
     const params: CreateTaskParams = {
@@ -319,15 +367,57 @@ export async function createTasksFromBreakdown(
     try {
       const file = await createTaskFile(app, content, task.title, epicName, settings);
       createdFiles.push(file);
-      // Store mapping from index to basename for dependency resolution
-      indexToBasename.set(taskIndex, file.basename);
+      indexToFile.set(taskIndex, file);
     } catch (error) {
       console.error(`[GPT Task Manager] Failed to create task: ${task.title}`, error);
       new Notice(`Failed to create task: ${task.title}`);
     }
   }
 
+  // PASS 2: Update files with forward dependencies
+  for (const { taskIndex, dependsOnIndex } of forwardDependencies) {
+    const file = indexToFile.get(taskIndex);
+    const dependsOnFile = indexToFile.get(dependsOnIndex);
+    
+    if (file && dependsOnFile) {
+      try {
+        await updateTaskParent(app, file, dependsOnFile.basename);
+      } catch (error) {
+        console.error(`[GPT Task Manager] Failed to update dependency for: ${file.basename}`, error);
+        // Non-fatal: task is created, just missing the link
+      }
+    }
+  }
+
   return createdFiles;
+}
+
+/**
+ * Update the Parent field in a task's frontmatter
+ */
+async function updateTaskParent(app: App, file: TFile, parentBasename: string): Promise<void> {
+  const content = await app.vault.read(file);
+  
+  // Find and update the Parent field in frontmatter
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontmatterMatch) {
+    return;
+  }
+
+  const frontmatter = frontmatterMatch[1];
+  const parentPattern = /^Parent:\s*.*/m;
+  
+  if (parentPattern.test(frontmatter)) {
+    const newFrontmatter = frontmatter.replace(
+      parentPattern,
+      `Parent: "[[${parentBasename}]]"`
+    );
+    const newContent = content.replace(
+      /^---\n[\s\S]*?\n---/,
+      `---\n${newFrontmatter}\n---`
+    );
+    await app.vault.modify(file, newContent);
+  }
 }
 
 /**

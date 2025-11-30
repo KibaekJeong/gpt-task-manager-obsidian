@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => GptTaskManagerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -349,69 +349,584 @@ var GptTaskManagerSettingTab = class extends import_obsidian.PluginSettingTab {
   }
 };
 
-// src/gpt-service.ts
+// src/api-client.ts
 var import_obsidian2 = require("obsidian");
-async function callGptApi(prompt, systemPrompt, apiKey, model, maxTokens, temperature) {
-  var _a, _b, _c, _d, _e;
-  if (!apiKey) {
-    return { success: false, content: null, errorMessage: "No API key configured" };
+
+// src/logger.ts
+var SENSITIVE_PATTERNS = [
+  /sk-[a-zA-Z0-9]{20,}/g,
+  // OpenAI API keys
+  /Bearer\s+[a-zA-Z0-9._-]+/gi,
+  // Bearer tokens
+  /api[_-]?key["\s:=]+[^\s"',}]+/gi,
+  // Generic API key patterns
+  /password["\s:=]+[^\s"',}]+/gi
+  // Passwords
+];
+var PLUGIN_PREFIX = "[GPT Task Manager]";
+var Logger = class {
+  constructor() {
+    this.logLevel = 1 /* INFO */;
+    this.logHistory = [];
+    this.maxHistorySize = 100;
+    this.listeners = [];
+  }
+  /**
+   * Set the current log level
+   */
+  setLogLevel(level) {
+    this.logLevel = level;
+  }
+  /**
+   * Get current log level
+   */
+  getLogLevel() {
+    return this.logLevel;
+  }
+  /**
+   * Add a listener for log entries (for telemetry/UI)
+   */
+  addListener(listener) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((listenerItem) => listenerItem !== listener);
+    };
+  }
+  /**
+   * Get recent log history
+   */
+  getHistory(limit) {
+    const historyLimit = limit || this.maxHistorySize;
+    return this.logHistory.slice(-historyLimit);
+  }
+  /**
+   * Clear log history
+   */
+  clearHistory() {
+    this.logHistory = [];
+  }
+  /**
+   * Sanitize text to remove sensitive information
+   */
+  sanitize(text) {
+    let sanitized = text;
+    for (const pattern of SENSITIVE_PATTERNS) {
+      sanitized = sanitized.replace(pattern, "[REDACTED]");
+    }
+    return sanitized;
+  }
+  /**
+   * Sanitize an object recursively
+   */
+  sanitizeObject(obj) {
+    if (obj === null || obj === void 0) {
+      return obj;
+    }
+    if (typeof obj === "string") {
+      return this.sanitize(obj);
+    }
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.sanitizeObject(item));
+    }
+    if (typeof obj === "object") {
+      const sanitized = {};
+      for (const [key, value] of Object.entries(obj)) {
+        const lowerKey = key.toLowerCase();
+        if (lowerKey.includes("apikey") || lowerKey.includes("api_key") || lowerKey.includes("password") || lowerKey.includes("secret") || lowerKey.includes("token") || lowerKey.includes("authorization")) {
+          sanitized[key] = "[REDACTED]";
+        } else {
+          sanitized[key] = this.sanitizeObject(value);
+        }
+      }
+      return sanitized;
+    }
+    return obj;
+  }
+  /**
+   * Create a log entry
+   */
+  log(level, category, message, data) {
+    if (level < this.logLevel) {
+      return;
+    }
+    const entry = {
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      level,
+      category,
+      message: this.sanitize(message),
+      data: data ? this.sanitizeObject(data) : void 0
+    };
+    this.logHistory.push(entry);
+    if (this.logHistory.length > this.maxHistorySize) {
+      this.logHistory.shift();
+    }
+    for (const listener of this.listeners) {
+      try {
+        listener(entry);
+      } catch (e) {
+      }
+    }
+    const prefix = `${PLUGIN_PREFIX} [${category}]`;
+    const dataStr = data ? ` ${JSON.stringify(this.sanitizeObject(data))}` : "";
+    switch (level) {
+      case 0 /* DEBUG */:
+        console.debug(`${prefix} ${message}${dataStr}`);
+        break;
+      case 1 /* INFO */:
+        console.log(`${prefix} ${message}${dataStr}`);
+        break;
+      case 2 /* WARN */:
+        console.warn(`${prefix} ${message}${dataStr}`);
+        break;
+      case 3 /* ERROR */:
+        console.error(`${prefix} ${message}${dataStr}`);
+        break;
+    }
+  }
+  debug(category, message, data) {
+    this.log(0 /* DEBUG */, category, message, data);
+  }
+  info(category, message, data) {
+    this.log(1 /* INFO */, category, message, data);
+  }
+  warn(category, message, data) {
+    this.log(2 /* WARN */, category, message, data);
+  }
+  error(category, message, data) {
+    this.log(3 /* ERROR */, category, message, data);
+  }
+};
+var logger = new Logger();
+function scopeTextForApi(text, maxLength = 4e3) {
+  const sanitized = logger.sanitize(text);
+  if (sanitized.length <= maxLength) {
+    return sanitized;
+  }
+  return sanitized.substring(0, maxLength - 3) + "...";
+}
+
+// src/api-client.ts
+var CATEGORY = "APIClient";
+var CancellationToken = class {
+  constructor() {
+    this._isCancelled = false;
+    this._reason = "";
+    this._callbacks = [];
+  }
+  get isCancelled() {
+    return this._isCancelled;
+  }
+  get reason() {
+    return this._reason;
+  }
+  cancel(reason = "User cancelled") {
+    if (this._isCancelled)
+      return;
+    this._isCancelled = true;
+    this._reason = reason;
+    for (const callback of this._callbacks) {
+      try {
+        callback();
+      } catch (e) {
+      }
+    }
+  }
+  onCancel(callback) {
+    if (this._isCancelled) {
+      callback();
+    } else {
+      this._callbacks.push(callback);
+    }
+  }
+  throwIfCancelled() {
+    if (this._isCancelled) {
+      throw new CancellationError(this._reason);
+    }
+  }
+};
+var CancellationError = class extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = "CancellationError";
+  }
+};
+var RateLimiter = class {
+  constructor(maxRequests = 10, windowMs = 6e4) {
+    this.requests = [];
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+  }
+  canMakeRequest() {
+    this.cleanup();
+    return this.requests.length < this.maxRequests;
+  }
+  recordRequest() {
+    this.requests.push(Date.now());
+  }
+  getWaitTime() {
+    this.cleanup();
+    if (this.requests.length < this.maxRequests) {
+      return 0;
+    }
+    const oldestRequest = this.requests[0];
+    return oldestRequest + this.windowMs - Date.now();
+  }
+  cleanup() {
+    const cutoff = Date.now() - this.windowMs;
+    this.requests = this.requests.filter((timestamp) => timestamp > cutoff);
+  }
+};
+var rateLimiter = new RateLimiter(10, 6e4);
+function calculateBackoffDelay(retryCount, baseDelayMs) {
+  const exponentialDelay = baseDelayMs * Math.pow(2, retryCount);
+  const jitter = Math.random() * 1e3;
+  return Math.min(exponentialDelay + jitter, 3e4);
+}
+function isRetryableError(statusCode) {
+  return statusCode === 429 || statusCode >= 500 && statusCode < 600;
+}
+function extractErrorMessage(response) {
+  var _a, _b;
+  try {
+    const body = response.json || response.text;
+    if (typeof body === "object" && ((_a = body == null ? void 0 : body.error) == null ? void 0 : _a.message)) {
+      return body.error.message;
+    }
+    if (typeof body === "string" && body.length < 200) {
+      try {
+        const parsed = JSON.parse(body);
+        if ((_b = parsed == null ? void 0 : parsed.error) == null ? void 0 : _b.message) {
+          return parsed.error.message;
+        }
+      } catch (e) {
+        return body;
+      }
+    }
+  } catch (e) {
+  }
+  return `HTTP ${response.status}`;
+}
+function getErrorWithRecovery(statusCode, message) {
+  switch (statusCode) {
+    case 401:
+      return `Authentication failed: ${message}. Please check your API key in settings.`;
+    case 403:
+      return `Access denied: ${message}. Your API key may lack required permissions.`;
+    case 429:
+      return `Rate limited: ${message}. Please wait a moment before trying again.`;
+    case 500:
+    case 502:
+    case 503:
+    case 504:
+      return `Server error: ${message}. The API is temporarily unavailable. Please try again later.`;
+    default:
+      return message;
+  }
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function makeApiRequest(config, cancellationToken) {
+  const {
+    url,
+    method,
+    headers = {},
+    body,
+    timeout = 3e4,
+    maxRetries = 3,
+    retryDelayMs = 1e3
+  } = config;
+  if (!rateLimiter.canMakeRequest()) {
+    const waitTime = rateLimiter.getWaitTime();
+    logger.warn(CATEGORY, `Rate limit reached, need to wait ${waitTime}ms`);
+    return {
+      success: false,
+      data: null,
+      error: `Rate limited. Please wait ${Math.ceil(waitTime / 1e3)} seconds.`,
+      statusCode: 429,
+      retryCount: 0,
+      cancelled: false
+    };
+  }
+  let retryCount = 0;
+  let lastError = "";
+  let lastStatusCode = 0;
+  while (retryCount <= maxRetries) {
+    if (cancellationToken == null ? void 0 : cancellationToken.isCancelled) {
+      logger.info(CATEGORY, "Request cancelled by user");
+      return {
+        success: false,
+        data: null,
+        error: cancellationToken.reason,
+        statusCode: 0,
+        retryCount,
+        cancelled: true
+      };
+    }
+    try {
+      logger.debug(CATEGORY, `Making request attempt ${retryCount + 1}/${maxRetries + 1}`, {
+        url,
+        method,
+        timeout
+      });
+      rateLimiter.recordRequest();
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Request timeout")), timeout);
+      });
+      const requestPromise = (0, import_obsidian2.requestUrl)({
+        url,
+        method,
+        headers,
+        body,
+        throw: false
+      });
+      const response = await Promise.race([requestPromise, timeoutPromise]);
+      lastStatusCode = response.status;
+      if (response.status >= 200 && response.status < 300) {
+        logger.info(CATEGORY, `Request successful`, { statusCode: response.status });
+        return {
+          success: true,
+          data: response.json,
+          error: null,
+          statusCode: response.status,
+          retryCount,
+          cancelled: false
+        };
+      }
+      lastError = extractErrorMessage(response);
+      logger.warn(CATEGORY, `Request failed`, { statusCode: response.status, error: lastError });
+      if (isRetryableError(response.status) && retryCount < maxRetries) {
+        const delay = calculateBackoffDelay(retryCount, retryDelayMs);
+        logger.info(CATEGORY, `Retrying in ${delay}ms (attempt ${retryCount + 2}/${maxRetries + 1})`);
+        const startWait = Date.now();
+        while (Date.now() - startWait < delay) {
+          if (cancellationToken == null ? void 0 : cancellationToken.isCancelled) {
+            return {
+              success: false,
+              data: null,
+              error: cancellationToken.reason,
+              statusCode: 0,
+              retryCount,
+              cancelled: true
+            };
+          }
+          await sleep(100);
+        }
+        retryCount++;
+        continue;
+      }
+      break;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      lastError = errorMessage;
+      logger.error(CATEGORY, `Request exception`, { error: errorMessage });
+      if (errorMessage === "Request timeout" && retryCount < maxRetries) {
+        const delay = calculateBackoffDelay(retryCount, retryDelayMs);
+        logger.info(CATEGORY, `Timeout, retrying in ${delay}ms`);
+        await sleep(delay);
+        retryCount++;
+        continue;
+      }
+      break;
+    }
+  }
+  const finalError = getErrorWithRecovery(lastStatusCode, lastError);
+  return {
+    success: false,
+    data: null,
+    error: finalError,
+    statusCode: lastStatusCode,
+    retryCount,
+    cancelled: false
+  };
+}
+async function callOpenAIChatApi(prompt, systemPrompt, config, cancellationToken) {
+  var _a, _b, _c, _d;
+  const scopedPrompt = scopeTextForApi(prompt, 8e3);
+  const scopedSystem = scopeTextForApi(systemPrompt, 2e3);
+  const response = await makeApiRequest({
+    url: "https://api.openai.com/v1/chat/completions",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: "system", content: scopedSystem },
+        { role: "user", content: scopedPrompt }
+      ],
+      max_tokens: config.maxTokens,
+      temperature: config.temperature
+    }),
+    timeout: config.timeout || 6e4,
+    maxRetries: config.maxRetries || 3
+  }, cancellationToken);
+  if (!response.success) {
+    return {
+      ...response,
+      data: null
+    };
+  }
+  const content = (_d = (_c = (_b = (_a = response.data) == null ? void 0 : _a.choices) == null ? void 0 : _b[0]) == null ? void 0 : _c.message) == null ? void 0 : _d.content;
+  if (!content) {
+    return {
+      success: false,
+      data: null,
+      error: "Empty response from API",
+      statusCode: response.statusCode,
+      retryCount: response.retryCount,
+      cancelled: false
+    };
+  }
+  return {
+    success: true,
+    data: { content },
+    error: null,
+    statusCode: response.statusCode,
+    retryCount: response.retryCount,
+    cancelled: false
+  };
+}
+async function callWhisperApi(audioBlob, apiKey, model = "whisper-1", language, cancellationToken) {
+  var _a;
+  if (cancellationToken == null ? void 0 : cancellationToken.isCancelled) {
+    return {
+      success: false,
+      data: null,
+      error: cancellationToken.reason,
+      statusCode: 0,
+      retryCount: 0,
+      cancelled: true
+    };
+  }
+  const formData = new FormData();
+  formData.append("file", audioBlob, "audio.webm");
+  formData.append("model", model);
+  if (language && language !== "auto") {
+    formData.append("language", language);
   }
   try {
-    console.log(`[GPT Task Manager] Calling GPT API with model: ${model}`);
-    const response = await (0, import_obsidian2.requestUrl)({
-      url: "https://api.openai.com/v1/chat/completions",
+    const controller = new AbortController();
+    cancellationToken == null ? void 0 : cancellationToken.onCancel(() => {
+      controller.abort();
+    });
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        max_tokens: maxTokens,
-        temperature
-      }),
-      throw: false
+      body: formData,
+      signal: controller.signal
     });
-    if (response.status !== 200) {
-      let errorMessage = `API error (${response.status})`;
-      const errorBody = response.text || response.json;
-      if (typeof errorBody === "string") {
-        try {
-          const parsed = JSON.parse(errorBody);
-          errorMessage = ((_a = parsed == null ? void 0 : parsed.error) == null ? void 0 : _a.message) || errorMessage;
-        } catch (e) {
-          if (errorBody.length < 200) {
-            errorMessage = errorBody;
-          }
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMessage = `HTTP ${response.status}`;
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMessage = ((_a = errorJson == null ? void 0 : errorJson.error) == null ? void 0 : _a.message) || errorMessage;
+      } catch (e) {
+        if (errorText.length < 200) {
+          errorMessage = errorText;
         }
-      } else if ((_b = errorBody == null ? void 0 : errorBody.error) == null ? void 0 : _b.message) {
-        errorMessage = errorBody.error.message;
       }
-      console.error(`[GPT Task Manager] GPT API error: ${response.status}`, errorBody);
-      return { success: false, content: null, errorMessage };
+      return {
+        success: false,
+        data: null,
+        error: getErrorWithRecovery(response.status, errorMessage),
+        statusCode: response.status,
+        retryCount: 0,
+        cancelled: false
+      };
     }
-    const data = response.json;
-    const content = (_e = (_d = (_c = data == null ? void 0 : data.choices) == null ? void 0 : _c[0]) == null ? void 0 : _d.message) == null ? void 0 : _e.content;
-    if (!content) {
-      return { success: false, content: null, errorMessage: "Empty response from API" };
-    }
-    console.log(`[GPT Task Manager] GPT response received: ${content.length} chars`);
-    return { success: true, content, errorMessage: null };
+    const data = await response.json();
+    return {
+      success: true,
+      data: { text: data.text },
+      error: null,
+      statusCode: response.status,
+      retryCount: 0,
+      cancelled: false
+    };
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : "Unknown error";
-    console.error("[GPT Task Manager] GPT API call failed:", error);
-    return { success: false, content: null, errorMessage: errorMsg };
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        success: false,
+        data: null,
+        error: "Request cancelled",
+        statusCode: 0,
+        retryCount: 0,
+        cancelled: true
+      };
+    }
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    logger.error(CATEGORY, "Whisper API error", { error: errorMessage });
+    return {
+      success: false,
+      data: null,
+      error: errorMessage,
+      statusCode: 0,
+      retryCount: 0,
+      cancelled: false
+    };
   }
+}
+function setRateLimitConfig(maxRequests, windowMs) {
+  Object.assign(rateLimiter, new RateLimiter(maxRequests, windowMs));
+}
+
+// src/gpt-service.ts
+var CATEGORY2 = "GPTService";
+async function callGptApi(prompt, systemPrompt, apiKey, model, maxTokens, temperature, cancellationToken, timeoutSeconds = 60, maxRetries = 3) {
+  var _a;
+  if (!apiKey) {
+    logger.warn(CATEGORY2, "No API key configured");
+    return { success: false, content: null, errorMessage: "No API key configured" };
+  }
+  logger.info(CATEGORY2, `Calling GPT API`, { model, maxTokens, temperature });
+  const config = {
+    apiKey,
+    model,
+    maxTokens,
+    temperature,
+    timeout: timeoutSeconds * 1e3,
+    maxRetries
+  };
+  const response = await callOpenAIChatApi(
+    prompt,
+    systemPrompt,
+    config,
+    cancellationToken
+  );
+  if (response.cancelled) {
+    logger.info(CATEGORY2, "GPT API call was cancelled");
+    return {
+      success: false,
+      content: null,
+      errorMessage: "Request cancelled",
+      cancelled: true
+    };
+  }
+  if (!response.success) {
+    logger.error(CATEGORY2, "GPT API call failed", { error: response.error });
+    return {
+      success: false,
+      content: null,
+      errorMessage: response.error || "Unknown error"
+    };
+  }
+  const content = (_a = response.data) == null ? void 0 : _a.content;
+  if (!content) {
+    logger.warn(CATEGORY2, "GPT API returned empty content");
+    return {
+      success: false,
+      content: null,
+      errorMessage: "Empty response from API"
+    };
+  }
+  logger.info(CATEGORY2, `GPT response received`, { contentLength: content.length });
+  return { success: true, content, errorMessage: null };
 }
 function extractJsonFromResponse(response) {
   const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -494,6 +1009,7 @@ function fillPromptTemplate(template, values) {
 
 // src/voice.ts
 var import_obsidian3 = require("obsidian");
+var CATEGORY3 = "Voice";
 var VoiceRecordingModal = class extends import_obsidian3.Modal {
   constructor(app, onComplete, onCancel) {
     super(app);
@@ -656,109 +1172,35 @@ var VoiceRecordingModal = class extends import_obsidian3.Modal {
     contentEl.empty();
   }
 };
-async function transcribeAudio(audioBlob, apiKey, model = "whisper-1", language) {
+async function transcribeAudio(audioBlob, apiKey, model = "whisper-1", language, cancellationToken) {
   var _a;
-  try {
-    const arrayBuffer = await audioBlob.arrayBuffer();
-    const mimeType = audioBlob.type || "audio/webm";
-    const extension = getExtensionFromMimeType(mimeType);
-    const filename = `recording.${extension}`;
-    const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
-    const bodyParts = [];
-    bodyParts.push(
-      `--${boundary}\r
-Content-Disposition: form-data; name="file"; filename="${filename}"\r
-Content-Type: ${mimeType}\r
-\r
-`
-    );
-    bodyParts.push(arrayBuffer);
-    bodyParts.push("\r\n");
-    bodyParts.push(
-      `--${boundary}\r
-Content-Disposition: form-data; name="model"\r
-\r
-${model}\r
-`
-    );
-    if (language && language !== "auto") {
-      bodyParts.push(
-        `--${boundary}\r
-Content-Disposition: form-data; name="language"\r
-\r
-${language}\r
-`
-      );
-    }
-    bodyParts.push(
-      `--${boundary}\r
-Content-Disposition: form-data; name="response_format"\r
-\r
-text\r
-`
-    );
-    bodyParts.push(`--${boundary}--\r
-`);
-    const body = await combineMultipartBody(bodyParts);
-    const response = await (0, import_obsidian3.requestUrl)({
-      url: "https://api.openai.com/v1/audio/transcriptions",
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`
-      },
-      body,
-      throw: false
-    });
-    if (response.status !== 200) {
-      let errorDetail = "";
-      try {
-        const errorBody = JSON.parse(response.text);
-        errorDetail = ((_a = errorBody.error) == null ? void 0 : _a.message) || errorBody.message || response.text;
-      } catch (e) {
-        errorDetail = response.text.substring(0, 200);
-      }
-      throw new Error(`Whisper API error (${response.status}): ${errorDetail}`);
-    }
-    return response.text.trim();
-  } catch (error) {
-    console.error("[GPT Task Manager] Transcription failed:", error);
-    throw error;
+  logger.info(CATEGORY3, "Starting audio transcription", {
+    blobSize: audioBlob.size,
+    model,
+    language: language || "auto"
+  });
+  const response = await callWhisperApi(
+    audioBlob,
+    apiKey,
+    model,
+    language,
+    cancellationToken
+  );
+  if (response.cancelled) {
+    logger.info(CATEGORY3, "Transcription was cancelled");
+    throw new Error("Transcription cancelled");
   }
-}
-function getExtensionFromMimeType(mimeType) {
-  const mimeToExt = {
-    "audio/webm": "webm",
-    "audio/webm;codecs=opus": "webm",
-    "audio/ogg": "ogg",
-    "audio/ogg;codecs=opus": "ogg",
-    "audio/mp4": "m4a",
-    "audio/mpeg": "mp3",
-    "audio/wav": "wav"
-  };
-  return mimeToExt[mimeType] || "webm";
-}
-async function combineMultipartBody(parts) {
-  const encoder = new TextEncoder();
-  const buffers = [];
-  for (const part of parts) {
-    if (typeof part === "string") {
-      buffers.push(encoder.encode(part).buffer);
-    } else {
-      buffers.push(part);
-    }
+  if (!response.success) {
+    logger.error(CATEGORY3, "Transcription failed", { error: response.error });
+    throw new Error(response.error || "Transcription failed");
   }
-  let totalLength = 0;
-  for (const buf of buffers) {
-    totalLength += buf.byteLength;
+  const text = (_a = response.data) == null ? void 0 : _a.text;
+  if (!text) {
+    logger.warn(CATEGORY3, "Transcription returned empty text");
+    throw new Error("Transcription returned empty result");
   }
-  const combined = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const buf of buffers) {
-    combined.set(new Uint8Array(buf), offset);
-    offset += buf.byteLength;
-  }
-  return combined.buffer;
+  logger.info(CATEGORY3, "Transcription successful", { textLength: text.length });
+  return text.trim();
 }
 function parseVoiceTaskInput(transcription) {
   const result = {
@@ -988,10 +1430,32 @@ async function ensureFolderExists(app, folderPath) {
   if (existingFolder && existingFolder instanceof import_obsidian5.TFolder) {
     return;
   }
-  try {
-    await app.vault.createFolder(normalizedPath);
-  } catch (error) {
-    console.log(`[GPT Task Manager] Folder creation note: ${folderPath}`, error);
+  const pathParts = normalizedPath.split("/").filter((part) => part.length > 0);
+  const foldersToCreate = [];
+  let currentPath = "";
+  for (const part of pathParts) {
+    currentPath = currentPath ? `${currentPath}/${part}` : part;
+    const existing = app.vault.getAbstractFileByPath(currentPath);
+    if (!existing) {
+      foldersToCreate.push(currentPath);
+    } else if (existing instanceof import_obsidian5.TFile) {
+      throw new Error(`Cannot create folder "${currentPath}": a file exists at this path`);
+    }
+  }
+  for (const folderToCreate of foldersToCreate) {
+    try {
+      const recheck = app.vault.getAbstractFileByPath(folderToCreate);
+      if (!recheck) {
+        await app.vault.createFolder(folderToCreate);
+      }
+    } catch (error) {
+      const afterError = app.vault.getAbstractFileByPath(folderToCreate);
+      if (afterError && afterError instanceof import_obsidian5.TFolder) {
+        continue;
+      }
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to create folder "${folderToCreate}": ${errorMessage}`);
+    }
   }
 }
 function sanitizeFilename(filename, fallbackDefault = "Untitled Task") {
@@ -1130,7 +1594,8 @@ async function createTaskFile(app, content, title, epicName, settings) {
 }
 async function createTasksFromBreakdown(app, breakdown, epicName, epicMetadata, settings) {
   const createdFiles = [];
-  const indexToBasename = /* @__PURE__ */ new Map();
+  const indexToFile = /* @__PURE__ */ new Map();
+  const forwardDependencies = [];
   await ensureFolderExists(app, settings.tasksFolder);
   if (epicName) {
     const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
@@ -1142,8 +1607,15 @@ async function createTasksFromBreakdown(app, breakdown, epicName, epicMetadata, 
     let parentBasename = void 0;
     if (task.dependsOn !== null && task.dependsOn !== void 0) {
       const dependsOnIndex = task.dependsOn;
-      if (dependsOnIndex >= 0 && dependsOnIndex < taskIndex && indexToBasename.has(dependsOnIndex)) {
-        parentBasename = indexToBasename.get(dependsOnIndex);
+      if (dependsOnIndex >= 0 && dependsOnIndex < breakdown.tasks.length) {
+        if (dependsOnIndex < taskIndex) {
+          const dependsOnFile = indexToFile.get(dependsOnIndex);
+          if (dependsOnFile) {
+            parentBasename = dependsOnFile.basename;
+          }
+        } else if (dependsOnIndex > taskIndex) {
+          forwardDependencies.push({ taskIndex, dependsOnIndex });
+        }
       }
     }
     const params = {
@@ -1161,13 +1633,46 @@ async function createTasksFromBreakdown(app, breakdown, epicName, epicMetadata, 
     try {
       const file = await createTaskFile(app, content, task.title, epicName, settings);
       createdFiles.push(file);
-      indexToBasename.set(taskIndex, file.basename);
+      indexToFile.set(taskIndex, file);
     } catch (error) {
       console.error(`[GPT Task Manager] Failed to create task: ${task.title}`, error);
       new import_obsidian5.Notice(`Failed to create task: ${task.title}`);
     }
   }
+  for (const { taskIndex, dependsOnIndex } of forwardDependencies) {
+    const file = indexToFile.get(taskIndex);
+    const dependsOnFile = indexToFile.get(dependsOnIndex);
+    if (file && dependsOnFile) {
+      try {
+        await updateTaskParent(app, file, dependsOnFile.basename);
+      } catch (error) {
+        console.error(`[GPT Task Manager] Failed to update dependency for: ${file.basename}`, error);
+      }
+    }
+  }
   return createdFiles;
+}
+async function updateTaskParent(app, file, parentBasename) {
+  const content = await app.vault.read(file);
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontmatterMatch) {
+    return;
+  }
+  const frontmatter = frontmatterMatch[1];
+  const parentPattern = /^Parent:\s*.*/m;
+  if (parentPattern.test(frontmatter)) {
+    const newFrontmatter = frontmatter.replace(
+      parentPattern,
+      `Parent: "[[${parentBasename}]]"`
+    );
+    const newContent = content.replace(
+      /^---\n[\s\S]*?\n---/,
+      `---
+${newFrontmatter}
+---`
+    );
+    await app.vault.modify(file, newContent);
+  }
 }
 function buildBreakdownSummaries(breakdown, epicName, settings) {
   const summaries = [];
@@ -1306,8 +1811,528 @@ function showTaskConfirmation(app, summaries, operationType, epicName) {
   });
 }
 
+// src/cache.ts
+var import_obsidian6 = require("obsidian");
+var CATEGORY4 = "Cache";
+var DEFAULT_CONFIG = {
+  ttlMs: 6e4,
+  // 1 minute
+  maxEntries: 50,
+  debounceMs: 500
+};
+var Cache = class {
+  constructor(config = {}) {
+    this.entries = /* @__PURE__ */ new Map();
+    this.accessOrder = [];
+    this.globalVersion = 0;
+    this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+  /**
+   * Get a cached value
+   */
+  get(key) {
+    const entry = this.entries.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (Date.now() - entry.timestamp > this.config.ttlMs) {
+      this.entries.delete(key);
+      this.removeFromAccessOrder(key);
+      logger.debug(CATEGORY4, `Cache expired: ${key}`);
+      return null;
+    }
+    if (entry.version !== this.globalVersion) {
+      this.entries.delete(key);
+      this.removeFromAccessOrder(key);
+      logger.debug(CATEGORY4, `Cache invalidated (version mismatch): ${key}`);
+      return null;
+    }
+    this.removeFromAccessOrder(key);
+    this.accessOrder.push(key);
+    logger.debug(CATEGORY4, `Cache hit: ${key}`);
+    return entry.data;
+  }
+  /**
+   * Set a cached value
+   */
+  set(key, data) {
+    while (this.entries.size >= this.config.maxEntries && this.accessOrder.length > 0) {
+      const oldestKey = this.accessOrder.shift();
+      if (oldestKey) {
+        this.entries.delete(oldestKey);
+        logger.debug(CATEGORY4, `Cache evicted (LRU): ${oldestKey}`);
+      }
+    }
+    this.entries.set(key, {
+      data,
+      timestamp: Date.now(),
+      version: this.globalVersion
+    });
+    this.removeFromAccessOrder(key);
+    this.accessOrder.push(key);
+    logger.debug(CATEGORY4, `Cache set: ${key}`);
+  }
+  /**
+   * Check if key exists and is valid
+   */
+  has(key) {
+    return this.get(key) !== null;
+  }
+  /**
+   * Delete a specific key
+   */
+  delete(key) {
+    this.entries.delete(key);
+    this.removeFromAccessOrder(key);
+  }
+  /**
+   * Invalidate all entries (cheap operation - just bump version)
+   */
+  invalidateAll() {
+    this.globalVersion++;
+    logger.debug(CATEGORY4, `Cache invalidated all (version: ${this.globalVersion})`);
+  }
+  /**
+   * Clear all entries
+   */
+  clear() {
+    this.entries.clear();
+    this.accessOrder = [];
+    this.globalVersion++;
+    logger.debug(CATEGORY4, "Cache cleared");
+  }
+  /**
+   * Get cache statistics
+   */
+  getStats() {
+    return {
+      size: this.entries.size,
+      maxSize: this.config.maxEntries,
+      version: this.globalVersion
+    };
+  }
+  removeFromAccessOrder(key) {
+    const index = this.accessOrder.indexOf(key);
+    if (index !== -1) {
+      this.accessOrder.splice(index, 1);
+    }
+  }
+};
+var ContextCache = class {
+  constructor(app, config = {}) {
+    this.invalidationTimeout = null;
+    this.registeredEvents = [];
+    this.app = app;
+    this.debounceMs = config.debounceMs || DEFAULT_CONFIG.debounceMs;
+    this.goalsCache = new Cache(config);
+    this.projectsCache = new Cache(config);
+    this.epicsCache = new Cache(config);
+    this.tasksCache = new Cache(config);
+    this.metadataCache = new Cache(config);
+    this.setupEventListeners();
+  }
+  /**
+   * Setup event listeners for automatic invalidation
+   */
+  setupEventListeners() {
+    const modifyRef = this.app.vault.on("modify", (file) => {
+      if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        this.debouncedInvalidate();
+      }
+    });
+    const createRef = this.app.vault.on("create", (file) => {
+      if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        this.debouncedInvalidate();
+      }
+    });
+    const deleteRef = this.app.vault.on("delete", (file) => {
+      if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        this.debouncedInvalidate();
+      }
+    });
+    const renameRef = this.app.vault.on("rename", (file) => {
+      if (file instanceof import_obsidian6.TFile && file.extension === "md") {
+        this.debouncedInvalidate();
+      }
+    });
+    this.registeredEvents.push(
+      () => this.app.vault.offref(modifyRef),
+      () => this.app.vault.offref(createRef),
+      () => this.app.vault.offref(deleteRef),
+      () => this.app.vault.offref(renameRef)
+    );
+    logger.info(CATEGORY4, "Cache event listeners registered");
+  }
+  /**
+   * Debounced invalidation to prevent excessive cache clears
+   */
+  debouncedInvalidate() {
+    if (this.invalidationTimeout) {
+      clearTimeout(this.invalidationTimeout);
+    }
+    this.invalidationTimeout = setTimeout(() => {
+      this.invalidateAll();
+      this.invalidationTimeout = null;
+    }, this.debounceMs);
+  }
+  /**
+   * Get cached goals or load them
+   */
+  getGoals(key, loader) {
+    const cached = this.goalsCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.goalsCache.set(key, data);
+    return data;
+  }
+  /**
+   * Get cached projects or load them
+   */
+  getProjects(key, loader) {
+    const cached = this.projectsCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.projectsCache.set(key, data);
+    return data;
+  }
+  /**
+   * Get cached epics or load them
+   */
+  getEpics(key, loader) {
+    const cached = this.epicsCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.epicsCache.set(key, data);
+    return data;
+  }
+  /**
+   * Get cached tasks or load them
+   */
+  getTasks(key, loader) {
+    const cached = this.tasksCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.tasksCache.set(key, data);
+    return data;
+  }
+  /**
+   * Get cached metadata or load it
+   */
+  getMetadata(key, loader) {
+    const cached = this.metadataCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.metadataCache.set(key, data);
+    return data;
+  }
+  /**
+   * Invalidate all caches
+   */
+  invalidateAll() {
+    this.goalsCache.invalidateAll();
+    this.projectsCache.invalidateAll();
+    this.epicsCache.invalidateAll();
+    this.tasksCache.invalidateAll();
+    this.metadataCache.invalidateAll();
+    logger.info(CATEGORY4, "All caches invalidated");
+  }
+  /**
+   * Clear all caches
+   */
+  clear() {
+    this.goalsCache.clear();
+    this.projectsCache.clear();
+    this.epicsCache.clear();
+    this.tasksCache.clear();
+    this.metadataCache.clear();
+    logger.info(CATEGORY4, "All caches cleared");
+  }
+  /**
+   * Get cache statistics
+   */
+  getStats() {
+    return {
+      goals: this.goalsCache.getStats(),
+      projects: this.projectsCache.getStats(),
+      epics: this.epicsCache.getStats(),
+      tasks: this.tasksCache.getStats(),
+      metadata: this.metadataCache.getStats()
+    };
+  }
+  /**
+   * Cleanup event listeners
+   */
+  destroy() {
+    for (const cleanup of this.registeredEvents) {
+      cleanup();
+    }
+    this.registeredEvents = [];
+    if (this.invalidationTimeout) {
+      clearTimeout(this.invalidationTimeout);
+      this.invalidationTimeout = null;
+    }
+    this.clear();
+    logger.info(CATEGORY4, "Cache destroyed");
+  }
+};
+
+// src/i18n.ts
+var en = {
+  // Common
+  cancel: "Cancel",
+  confirm: "Confirm",
+  create: "Create",
+  save: "Save",
+  delete: "Delete",
+  close: "Close",
+  loading: "Loading...",
+  error: "Error",
+  success: "Success",
+  retry: "Retry",
+  // Task creation
+  quickTaskTitle: "\u{1F680} Quick Task Creation",
+  quickTaskDescription: "Describe your task naturally. GPT will help structure it based on your goals and projects.",
+  quickTaskPlaceholder: "e.g., Create a landing page for the Freedom Runway project with high priority",
+  createWithAi: "\u2728 Create with AI",
+  simpleCreate: "Create (No AI)",
+  taskCreationCancelled: "Task creation cancelled",
+  taskCreated: "\u2705 Created task: {title}",
+  taskCreationFailed: "Failed to create task: {error}",
+  // Voice
+  voiceRecording: "\u{1F3A4} Voice Recording",
+  voiceRecordingStart: "Start Recording",
+  voiceRecordingStop: "Stop Recording",
+  voiceRecordingCancel: "Cancel",
+  voiceTranscribing: "\u{1F3A4} Transcribing...",
+  voiceInstructions: "Speak clearly and describe your task. Include priority, epic, or project names if relevant.",
+  // Review modal
+  reviewTask: "\u{1F4CB} Review Task",
+  reviewTitle: "Title",
+  reviewObjective: "Objective",
+  reviewImportance: "Why it matters",
+  reviewEpic: "Epic",
+  reviewPriority: "Priority",
+  reviewSubtasks: "Suggested Subtasks ({count})",
+  noEpic: "-- No Epic --",
+  // Breakdown
+  breakdownTitle: "\u{1F4CA} Task Breakdown: {epic}",
+  breakdownDescription: "{count} tasks will be created:",
+  breakdownTaskCount: "{count} tasks",
+  breakdownDependsOn: "Depends on: Task {index}",
+  breakdownCreating: "\u{1F916} Breaking down: {epic}...",
+  // Confirmation
+  confirmTaskCreation: "\u{1F4CB} Confirm Task Creation ({count} tasks)",
+  confirmTaskCreationSingle: "\u{1F4CB} Confirm Task Creation",
+  confirmTasksWillBeCreated: "The following tasks will be created:",
+  confirmTargetFolder: "\u{1F4C1} {folder}",
+  confirmCreateTasks: "\u2713 Create {count} Tasks",
+  confirmCreateTask: "\u2713 Create Task",
+  // Errors
+  errorNoApiKey: "Please set your OpenAI API key in settings first.",
+  errorVoiceDisabled: "Voice input is disabled. Enable it in settings.",
+  errorNoEpics: "No epics found in your vault.",
+  errorNoSelection: "Please select some text first.",
+  errorRateLimited: "Rate limited. Please wait {seconds} seconds.",
+  errorTimeout: "Request timed out. Please try again.",
+  errorServerError: "Server error. Please try again later.",
+  errorAuthFailed: "Authentication failed. Please check your API key.",
+  errorParsingFailed: "Failed to parse GPT response. Creating simple task.",
+  // Progress
+  progressProcessing: "\u{1F916} Processing with GPT...",
+  progressBreakingDown: "\u{1F916} Breaking down epic...",
+  progressCreatingTasks: "Creating tasks...",
+  progressTranscribing: "\u{1F3A4} Transcribing audio...",
+  // Settings
+  settingsApiConfig: "\u{1F511} API Configuration",
+  settingsVaultPaths: "\u{1F4C1} Vault Paths",
+  settingsFeatures: "\u26A1 Features",
+  settingsDefaults: "\u{1F4CB} Task Defaults",
+  settingsPrompts: "\u{1F916} GPT Prompts",
+  settingsReset: "\u{1F504} Reset",
+  // Conflict resolution
+  conflictFileExists: "File already exists: {filename}",
+  conflictRename: "Rename",
+  conflictOverwrite: "Overwrite",
+  conflictSkip: "Skip",
+  // Accessibility
+  ariaCloseModal: "Close modal",
+  ariaConfirmButton: "Confirm action",
+  ariaCancelButton: "Cancel action",
+  ariaLoadingIndicator: "Loading, please wait",
+  ariaTaskList: "Task list",
+  ariaPriorityBadge: "Priority: {priority}"
+};
+var ko = {
+  // Common
+  cancel: "\uCDE8\uC18C",
+  confirm: "\uD655\uC778",
+  create: "\uC0DD\uC131",
+  save: "\uC800\uC7A5",
+  delete: "\uC0AD\uC81C",
+  close: "\uB2EB\uAE30",
+  loading: "\uB85C\uB529 \uC911...",
+  error: "\uC624\uB958",
+  success: "\uC131\uACF5",
+  retry: "\uC7AC\uC2DC\uB3C4",
+  // Task creation
+  quickTaskTitle: "\u{1F680} \uBE60\uB978 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  quickTaskDescription: "\uD0DC\uC2A4\uD06C\uB97C \uC790\uC5F0\uC2A4\uB7FD\uAC8C \uC124\uBA85\uD558\uC138\uC694. GPT\uAC00 \uBAA9\uD45C\uC640 \uD504\uB85C\uC81D\uD2B8\uC5D0 \uB9DE\uAC8C \uAD6C\uC870\uD654\uD569\uB2C8\uB2E4.",
+  quickTaskPlaceholder: "\uC608: Freedom Runway \uD504\uB85C\uC81D\uD2B8\uC758 \uB79C\uB529 \uD398\uC774\uC9C0\uB97C \uB192\uC740 \uC6B0\uC120\uC21C\uC704\uB85C \uB9CC\uB4E4\uAE30",
+  createWithAi: "\u2728 AI\uB85C \uC0DD\uC131",
+  simpleCreate: "\uC0DD\uC131 (AI \uC5C6\uC774)",
+  taskCreationCancelled: "\uD0DC\uC2A4\uD06C \uC0DD\uC131\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4",
+  taskCreated: "\u2705 \uD0DC\uC2A4\uD06C \uC0DD\uC131\uB428: {title}",
+  taskCreationFailed: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC2E4\uD328: {error}",
+  // Voice
+  voiceRecording: "\u{1F3A4} \uC74C\uC131 \uB179\uC74C",
+  voiceRecordingStart: "\uB179\uC74C \uC2DC\uC791",
+  voiceRecordingStop: "\uB179\uC74C \uC911\uC9C0",
+  voiceRecordingCancel: "\uCDE8\uC18C",
+  voiceTranscribing: "\u{1F3A4} \uBCC0\uD658 \uC911...",
+  voiceInstructions: "\uBA85\uD655\uD558\uAC8C \uB9D0\uD558\uACE0 \uD0DC\uC2A4\uD06C\uB97C \uC124\uBA85\uD558\uC138\uC694. \uC6B0\uC120\uC21C\uC704, \uC5D0\uD53D \uB610\uB294 \uD504\uB85C\uC81D\uD2B8 \uC774\uB984\uC744 \uD3EC\uD568\uD558\uC138\uC694.",
+  // Review modal
+  reviewTask: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAC80\uD1A0",
+  reviewTitle: "\uC81C\uBAA9",
+  reviewObjective: "\uBAA9\uD45C",
+  reviewImportance: "\uC911\uC694\uD55C \uC774\uC720",
+  reviewEpic: "\uC5D0\uD53D",
+  reviewPriority: "\uC6B0\uC120\uC21C\uC704",
+  reviewSubtasks: "\uC81C\uC548\uB41C \uD558\uC704 \uD0DC\uC2A4\uD06C ({count})",
+  noEpic: "-- \uC5D0\uD53D \uC5C6\uC74C --",
+  // Breakdown
+  breakdownTitle: "\u{1F4CA} \uD0DC\uC2A4\uD06C \uBD84\uD574: {epic}",
+  breakdownDescription: "{count}\uAC1C\uC758 \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
+  breakdownTaskCount: "{count}\uAC1C \uD0DC\uC2A4\uD06C",
+  breakdownDependsOn: "\uC758\uC874: \uD0DC\uC2A4\uD06C {index}",
+  breakdownCreating: "\u{1F916} \uBD84\uD574 \uC911: {epic}...",
+  // Confirmation
+  confirmTaskCreation: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778 ({count}\uAC1C)",
+  confirmTaskCreationSingle: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778",
+  confirmTasksWillBeCreated: "\uB2E4\uC74C \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
+  confirmTargetFolder: "\u{1F4C1} {folder}",
+  confirmCreateTasks: "\u2713 {count}\uAC1C \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  confirmCreateTask: "\u2713 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  // Errors
+  errorNoApiKey: "\uBA3C\uC800 \uC124\uC815\uC5D0\uC11C OpenAI API \uD0A4\uB97C \uC124\uC815\uD558\uC138\uC694.",
+  errorVoiceDisabled: "\uC74C\uC131 \uC785\uB825\uC774 \uBE44\uD65C\uC131\uD654\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD65C\uC131\uD654\uD558\uC138\uC694.",
+  errorNoEpics: "\uBCFC\uD2B8\uC5D0\uC11C \uC5D0\uD53D\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  errorNoSelection: "\uBA3C\uC800 \uD14D\uC2A4\uD2B8\uB97C \uC120\uD0DD\uD558\uC138\uC694.",
+  errorRateLimited: "\uC694\uCCAD \uC81C\uD55C\uB428. {seconds}\uCD08 \uD6C4\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorTimeout: "\uC694\uCCAD \uC2DC\uAC04 \uCD08\uACFC. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorServerError: "\uC11C\uBC84 \uC624\uB958. \uB098\uC911\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorAuthFailed: "\uC778\uC99D \uC2E4\uD328. API \uD0A4\uB97C \uD655\uC778\uD558\uC138\uC694.",
+  errorParsingFailed: "GPT \uC751\uB2F5 \uD30C\uC2F1 \uC2E4\uD328. \uAC04\uB2E8\uD55C \uD0DC\uC2A4\uD06C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4.",
+  // Progress
+  progressProcessing: "\u{1F916} GPT\uB85C \uCC98\uB9AC \uC911...",
+  progressBreakingDown: "\u{1F916} \uC5D0\uD53D \uBD84\uD574 \uC911...",
+  progressCreatingTasks: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC911...",
+  progressTranscribing: "\u{1F3A4} \uC624\uB514\uC624 \uBCC0\uD658 \uC911...",
+  // Settings
+  settingsApiConfig: "\u{1F511} API \uC124\uC815",
+  settingsVaultPaths: "\u{1F4C1} \uBCFC\uD2B8 \uACBD\uB85C",
+  settingsFeatures: "\u26A1 \uAE30\uB2A5",
+  settingsDefaults: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAE30\uBCF8\uAC12",
+  settingsPrompts: "\u{1F916} GPT \uD504\uB86C\uD504\uD2B8",
+  settingsReset: "\u{1F504} \uCD08\uAE30\uD654",
+  // Conflict resolution
+  conflictFileExists: "\uD30C\uC77C\uC774 \uC774\uBBF8 \uC874\uC7AC\uD569\uB2C8\uB2E4: {filename}",
+  conflictRename: "\uC774\uB984 \uBCC0\uACBD",
+  conflictOverwrite: "\uB36E\uC5B4\uC4F0\uAE30",
+  conflictSkip: "\uAC74\uB108\uB6F0\uAE30",
+  // Accessibility
+  ariaCloseModal: "\uBAA8\uB2EC \uB2EB\uAE30",
+  ariaConfirmButton: "\uC791\uC5C5 \uD655\uC778",
+  ariaCancelButton: "\uC791\uC5C5 \uCDE8\uC18C",
+  ariaLoadingIndicator: "\uB85C\uB529 \uC911\uC785\uB2C8\uB2E4. \uC7A0\uC2DC \uAE30\uB2E4\uB824\uC8FC\uC138\uC694",
+  ariaTaskList: "\uD0DC\uC2A4\uD06C \uBAA9\uB85D",
+  ariaPriorityBadge: "\uC6B0\uC120\uC21C\uC704: {priority}"
+};
+var ja = {
+  ...en,
+  // Fallback to English for incomplete translations
+  cancel: "\u30AD\u30E3\u30F3\u30BB\u30EB",
+  confirm: "\u78BA\u8A8D",
+  create: "\u4F5C\u6210",
+  save: "\u4FDD\u5B58",
+  delete: "\u524A\u9664",
+  close: "\u9589\u3058\u308B",
+  loading: "\u8AAD\u307F\u8FBC\u307F\u4E2D...",
+  error: "\u30A8\u30E9\u30FC",
+  success: "\u6210\u529F",
+  retry: "\u518D\u8A66\u884C",
+  quickTaskTitle: "\u{1F680} \u30AF\u30A4\u30C3\u30AF\u30BF\u30B9\u30AF\u4F5C\u6210",
+  createWithAi: "\u2728 AI\u3067\u4F5C\u6210",
+  taskCreationCancelled: "\u30BF\u30B9\u30AF\u4F5C\u6210\u304C\u30AD\u30E3\u30F3\u30BB\u30EB\u3055\u308C\u307E\u3057\u305F"
+};
+var zh = {
+  ...en,
+  // Fallback to English for incomplete translations
+  cancel: "\u53D6\u6D88",
+  confirm: "\u786E\u8BA4",
+  create: "\u521B\u5EFA",
+  save: "\u4FDD\u5B58",
+  delete: "\u5220\u9664",
+  close: "\u5173\u95ED",
+  loading: "\u52A0\u8F7D\u4E2D...",
+  error: "\u9519\u8BEF",
+  success: "\u6210\u529F",
+  retry: "\u91CD\u8BD5",
+  quickTaskTitle: "\u{1F680} \u5FEB\u901F\u521B\u5EFA\u4EFB\u52A1",
+  createWithAi: "\u2728 AI\u521B\u5EFA",
+  taskCreationCancelled: "\u4EFB\u52A1\u521B\u5EFA\u5DF2\u53D6\u6D88"
+};
+var translations = {
+  en,
+  ko,
+  ja,
+  zh
+};
+var currentLocale = "en";
+function setLocale(locale) {
+  if (translations[locale]) {
+    currentLocale = locale;
+  } else {
+    console.warn(`[GPT Task Manager] Unsupported locale: ${locale}, falling back to English`);
+    currentLocale = "en";
+  }
+}
+function t(key, params) {
+  const strings = translations[currentLocale] || translations.en;
+  let text = strings[key] || translations.en[key] || key;
+  if (params) {
+    for (const [paramKey, value] of Object.entries(params)) {
+      text = text.replace(new RegExp(`\\{${paramKey}\\}`, "g"), String(value));
+    }
+  }
+  return text;
+}
+
+// src/ui-components.ts
+var import_obsidian7 = require("obsidian");
+function showNotice(message, duration = 4e3) {
+  new import_obsidian7.Notice(message, duration);
+}
+function showErrorNotice(error, recovery) {
+  const message = recovery ? `${error}
+${recovery}` : error;
+  new import_obsidian7.Notice(message, 6e3);
+}
+function showSuccessNotice(message) {
+  new import_obsidian7.Notice(`\u2705 ${message}`, 3e3);
+}
+
 // main.ts
-var QuickTaskModal = class extends import_obsidian6.Modal {
+var QuickTaskModal = class extends import_obsidian8.Modal {
   constructor(app, onSubmit) {
     super(app);
     this.inputEl = null;
@@ -1351,7 +2376,7 @@ var QuickTaskModal = class extends import_obsidian6.Modal {
       this.close();
       this.onSubmit(input);
     } else {
-      new import_obsidian6.Notice("Please enter a task description");
+      new import_obsidian8.Notice("Please enter a task description");
     }
   }
   onClose() {
@@ -1359,7 +2384,7 @@ var QuickTaskModal = class extends import_obsidian6.Modal {
     contentEl.empty();
   }
 };
-var EpicSelectModal = class extends import_obsidian6.FuzzySuggestModal {
+var EpicSelectModal = class extends import_obsidian8.FuzzySuggestModal {
   constructor(app, epics, onChoose) {
     super(app);
     this.epics = epics;
@@ -1378,7 +2403,7 @@ var EpicSelectModal = class extends import_obsidian6.FuzzySuggestModal {
     this.onChoose(item);
   }
 };
-var TaskReviewModal = class extends import_obsidian6.Modal {
+var TaskReviewModal = class extends import_obsidian8.Modal {
   constructor(app, suggestion, epics, onConfirm, onCancel) {
     super(app);
     this.suggestion = suggestion;
@@ -1480,7 +2505,7 @@ var TaskReviewModal = class extends import_obsidian6.Modal {
     contentEl.empty();
   }
 };
-var BreakdownReviewModal = class extends import_obsidian6.Modal {
+var BreakdownReviewModal = class extends import_obsidian8.Modal {
   constructor(app, breakdown, epicName, onConfirm, onCancel) {
     super(app);
     this.breakdown = breakdown;
@@ -1537,14 +2562,17 @@ var BreakdownReviewModal = class extends import_obsidian6.Modal {
     contentEl.empty();
   }
 };
-var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
+var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    this.contextCache = null;
+    this.activeCancellationToken = null;
   }
   async onload() {
-    console.log("[GPT Task Manager] Loading plugin...");
+    logger.info("Plugin", "Loading GPT Task Manager plugin...");
     await this.loadSettings();
+    this.initializeInfrastructure();
     this.addSettingTab(new GptTaskManagerSettingTab(this.app, this));
     this.addRibbonIcon("plus-circle", "Quick Task (GPT)", () => {
       this.showQuickTaskModal();
@@ -1579,10 +2607,17 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         this.createTaskFromSelection(editor);
       }
     });
-    console.log("[GPT Task Manager] Plugin loaded successfully");
+    logger.info("Plugin", "GPT Task Manager loaded successfully");
   }
   onunload() {
-    console.log("[GPT Task Manager] Unloading plugin...");
+    logger.info("Plugin", "Unloading GPT Task Manager plugin...");
+    if (this.contextCache) {
+      this.contextCache.destroy();
+      this.contextCache = null;
+    }
+    if (this.activeCancellationToken) {
+      this.activeCancellationToken.cancel("Plugin unloading");
+    }
   }
   async loadSettings() {
     const stored = await this.loadData();
@@ -1590,13 +2625,90 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+    this.initializeInfrastructure();
+  }
+  /**
+   * Initialize infrastructure based on settings
+   */
+  initializeInfrastructure() {
+    const logLevelMap = {
+      debug: 0 /* DEBUG */,
+      info: 1 /* INFO */,
+      warn: 2 /* WARN */,
+      error: 3 /* ERROR */,
+      none: 4 /* NONE */
+    };
+    logger.setLogLevel(logLevelMap[this.settings.logLevel] || 1 /* INFO */);
+    setLocale(this.settings.uiLocale);
+    setRateLimitConfig(this.settings.rateLimitPerMinute, 6e4);
+    if (this.settings.enableContextCache) {
+      if (!this.contextCache) {
+        this.contextCache = new ContextCache(this.app, {
+          ttlMs: 6e4,
+          // 1 minute cache
+          maxEntries: 50,
+          debounceMs: 500
+        });
+      }
+    } else if (this.contextCache) {
+      this.contextCache.destroy();
+      this.contextCache = null;
+    }
+    logger.debug("Plugin", "Infrastructure initialized", {
+      logLevel: this.settings.logLevel,
+      locale: this.settings.uiLocale,
+      cacheEnabled: this.settings.enableContextCache,
+      rateLimitPerMinute: this.settings.rateLimitPerMinute
+    });
+  }
+  /**
+   * Create a new cancellation token for an operation
+   */
+  createCancellationToken() {
+    if (this.activeCancellationToken) {
+      this.activeCancellationToken.cancel("New operation started");
+    }
+    this.activeCancellationToken = new CancellationToken();
+    return this.activeCancellationToken;
+  }
+  /**
+   * Get user context (cached if enabled)
+   */
+  getUserContext() {
+    if (this.contextCache && this.settings.enableContextCache) {
+      const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
+      const goals = this.contextCache.getGoals(
+        cacheKey,
+        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).goals
+      );
+      const projects = this.contextCache.getProjects(
+        cacheKey,
+        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).projects
+      );
+      const epics = this.contextCache.getEpics(
+        cacheKey,
+        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).epics
+      );
+      const activeTasks = this.contextCache.getTasks(
+        cacheKey,
+        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).activeTasks
+      );
+      return { goals, projects, epics, activeTasks };
+    }
+    return loadUserContext(
+      this.app,
+      this.settings.goalsFolder,
+      this.settings.projectsFolder,
+      this.settings.epicsFolder,
+      this.settings.tasksFolder
+    );
   }
   /**
    * Show quick task input modal
    */
   showQuickTaskModal() {
     if (!this.settings.openAIApiKey) {
-      new import_obsidian6.Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
     new QuickTaskModal(this.app, async (input) => {
@@ -1607,15 +2719,10 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    * Process quick task input with GPT
    */
   async processQuickTask(input) {
-    new import_obsidian6.Notice("\u{1F916} Processing with GPT...");
+    showNotice(t("progressProcessing"));
+    const cancellationToken = this.createCancellationToken();
     try {
-      const context = loadUserContext(
-        this.app,
-        this.settings.goalsFolder,
-        this.settings.projectsFolder,
-        this.settings.epicsFolder,
-        this.settings.tasksFolder
-      );
+      const context = this.getUserContext();
       const formattedContext = formatContextForPrompt(context);
       const prompt = fillPromptTemplate(this.settings.taskCreationPrompt, {
         goals: formattedContext.goals,
@@ -1629,15 +2736,22 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         this.settings.openAIApiKey,
         this.settings.gptModel,
         this.settings.gptMaxTokens,
-        this.settings.gptTemperature
+        this.settings.gptTemperature,
+        cancellationToken,
+        this.settings.apiTimeoutSeconds,
+        this.settings.apiMaxRetries
       );
+      if (result.cancelled) {
+        showNotice(t("taskCreationCancelled"));
+        return;
+      }
       if (!result.success || !result.content) {
-        new import_obsidian6.Notice(`GPT Error: ${result.errorMessage || "Unknown error"}`);
+        showErrorNotice(result.errorMessage || "Unknown error");
         return;
       }
       const suggestion = parseTaskSuggestion(result.content);
       if (!suggestion) {
-        new import_obsidian6.Notice("Failed to parse GPT response. Creating simple task.");
+        showNotice(t("errorParsingFailed"));
         await this.createSimpleTask(input);
         return;
       }
@@ -1649,12 +2763,12 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
           await this.createTaskFromSuggestion(finalSuggestion, selectedEpic);
         },
         () => {
-          new import_obsidian6.Notice("Task creation cancelled");
+          showNotice(t("taskCreationCancelled"));
         }
       ).open();
     } catch (error) {
-      console.error("[GPT Task Manager] Quick task error:", error);
-      new import_obsidian6.Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Quick task error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
   /**
@@ -1670,7 +2784,7 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         epicName
       );
       if (!confirmed) {
-        new import_obsidian6.Notice("Task creation cancelled");
+        new import_obsidian8.Notice("Task creation cancelled");
         return;
       }
       let epicMetadata = null;
@@ -1685,11 +2799,11 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         epicName,
         this.settings
       );
-      new import_obsidian6.Notice(`\u2705 Created task: ${suggestion.title}`);
+      new import_obsidian8.Notice(`\u2705 Created task: ${suggestion.title}`);
       await this.app.workspace.openLinkText(file.path, "", false);
     } catch (error) {
       console.error("[GPT Task Manager] Task creation error:", error);
-      new import_obsidian6.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
+      new import_obsidian8.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
   /**
@@ -1697,11 +2811,11 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    */
   startVoiceTask() {
     if (!this.settings.openAIApiKey) {
-      new import_obsidian6.Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
     if (!this.settings.enableVoiceInput) {
-      new import_obsidian6.Notice("Voice input is disabled. Enable it in settings.");
+      showErrorNotice(t("errorVoiceDisabled"));
       return;
     }
     new VoiceRecordingModal(
@@ -1710,7 +2824,7 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         await this.processVoiceTask(audioBlob);
       },
       () => {
-        new import_obsidian6.Notice("Recording cancelled");
+        showNotice(t("taskCreationCancelled"));
       }
     ).open();
   }
@@ -1718,19 +2832,21 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    * Process voice recording into task
    */
   async processVoiceTask(audioBlob) {
-    new import_obsidian6.Notice("\u{1F3A4} Transcribing...");
+    showNotice(t("progressTranscribing"));
+    const cancellationToken = this.createCancellationToken();
     try {
       const transcription = await transcribeAudio(
         audioBlob,
         this.settings.openAIApiKey,
         this.settings.whisperModel,
-        this.settings.defaultLanguage === "auto" ? void 0 : this.settings.defaultLanguage
+        this.settings.defaultLanguage === "auto" ? void 0 : this.settings.defaultLanguage,
+        cancellationToken
       );
       if (!transcription) {
-        new import_obsidian6.Notice("Transcription returned empty result");
+        showErrorNotice("Transcription returned empty result");
         return;
       }
-      new import_obsidian6.Notice(`\u{1F4DD} Transcribed: "${transcription.substring(0, 50)}..."`);
+      showNotice(`\u{1F4DD} Transcribed: "${transcription.substring(0, 50)}..."`);
       const voiceInput = parseVoiceTaskInput(transcription);
       if (this.settings.enableSmartSuggestions) {
         await this.processQuickTask(transcription);
@@ -1738,8 +2854,12 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         await this.createSimpleTask(voiceInput.taskTitle || transcription);
       }
     } catch (error) {
-      console.error("[GPT Task Manager] Voice task error:", error);
-      new import_obsidian6.Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Voice task error", { error: error instanceof Error ? error.message : "Unknown" });
+      if (error instanceof Error && error.message.includes("cancelled")) {
+        showNotice(t("taskCreationCancelled"));
+      } else {
+        showErrorNotice(error instanceof Error ? error.message : "Unknown error");
+      }
     }
   }
   /**
@@ -1747,12 +2867,12 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    */
   showEpicBreakdownModal() {
     if (!this.settings.openAIApiKey) {
-      new import_obsidian6.Notice("Please set your OpenAI API key in settings first.");
+      showErrorNotice(t("errorNoApiKey"));
       return;
     }
     const epics = loadEpics(this.app, this.settings.epicsFolder);
     if (epics.length === 0) {
-      new import_obsidian6.Notice("No epics found in your vault.");
+      showErrorNotice(t("errorNoEpics"));
       return;
     }
     new EpicSelectModal(this.app, epics, async (epic) => {
@@ -1763,12 +2883,13 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    * Break down an epic into tasks using GPT
    */
   async breakdownEpic(epic) {
-    new import_obsidian6.Notice(`\u{1F916} Breaking down: ${epic.name}...`);
+    showNotice(t("breakdownCreating", { epic: epic.name }));
+    const cancellationToken = this.createCancellationToken();
     try {
       const epicPath = epic.path;
       const epicFile = this.app.vault.getAbstractFileByPath(epicPath);
       let epicContent = "";
-      if (epicFile instanceof import_obsidian6.TFile) {
+      if (epicFile instanceof import_obsidian8.TFile) {
         epicContent = await this.app.vault.read(epicFile);
       }
       const objectiveMatch = epicContent.match(/## 🎯 Objective[\s\S]*?> What this epic aims to achieve:\s*\n-\s*(.+)/);
@@ -1787,15 +2908,22 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         this.settings.openAIApiKey,
         this.settings.gptModel,
         this.settings.gptMaxTokens,
-        this.settings.gptTemperature
+        this.settings.gptTemperature,
+        cancellationToken,
+        this.settings.apiTimeoutSeconds,
+        this.settings.apiMaxRetries
       );
+      if (result.cancelled) {
+        showNotice(t("taskCreationCancelled"));
+        return;
+      }
       if (!result.success || !result.content) {
-        new import_obsidian6.Notice(`GPT Error: ${result.errorMessage || "Unknown error"}`);
+        showErrorNotice(result.errorMessage || "Unknown error");
         return;
       }
       const breakdown = parseTaskBreakdown(result.content);
       if (!breakdown || breakdown.tasks.length === 0) {
-        new import_obsidian6.Notice("Failed to parse task breakdown from GPT response.");
+        showErrorNotice("Failed to parse task breakdown from GPT response.");
         return;
       }
       new BreakdownReviewModal(
@@ -1806,12 +2934,12 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
           await this.createBreakdownTasks(finalBreakdown, epic);
         },
         () => {
-          new import_obsidian6.Notice("Breakdown cancelled");
+          showNotice(t("taskCreationCancelled"));
         }
       ).open();
     } catch (error) {
-      console.error("[GPT Task Manager] Epic breakdown error:", error);
-      new import_obsidian6.Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Epic breakdown error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
   /**
@@ -1819,16 +2947,18 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
    */
   async createBreakdownTasks(breakdown, epic) {
     try {
-      const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
-      const confirmed = await showTaskConfirmation(
-        this.app,
-        summaries,
-        "breakdown",
-        epic.name
-      );
-      if (!confirmed) {
-        new import_obsidian6.Notice("Task breakdown cancelled");
-        return;
+      if (this.settings.showConfirmationDialogs) {
+        const summaries = buildBreakdownSummaries(breakdown, epic.name, this.settings);
+        const confirmed = await showTaskConfirmation(
+          this.app,
+          summaries,
+          "breakdown",
+          epic.name
+        );
+        if (!confirmed) {
+          showNotice(t("taskCreationCancelled"));
+          return;
+        }
       }
       const epicMetadata = {
         area: epic.area,
@@ -1842,13 +2972,13 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         epicMetadata,
         this.settings
       );
-      new import_obsidian6.Notice(`\u2705 Created ${files.length} tasks for ${epic.name}`);
+      showSuccessNotice(t("taskCreated", { title: `${files.length} tasks for ${epic.name}` }));
       if (files.length > 0) {
         await this.app.workspace.openLinkText(files[0].path, "", false);
       }
     } catch (error) {
-      console.error("[GPT Task Manager] Breakdown task creation error:", error);
-      new import_obsidian6.Notice(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      logger.error("Plugin", "Breakdown task creation error", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Unknown error");
     }
   }
   /**
@@ -1878,7 +3008,7 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         null
       );
       if (!confirmed) {
-        new import_obsidian6.Notice("Task creation cancelled");
+        new import_obsidian8.Notice("Task creation cancelled");
         return;
       }
       const params = {
@@ -1897,11 +3027,11 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
         null,
         this.settings
       );
-      new import_obsidian6.Notice(`\u2705 Created task: ${title}`);
+      new import_obsidian8.Notice(`\u2705 Created task: ${title}`);
       await this.app.workspace.openLinkText(file.path, "", false);
     } catch (error) {
       console.error("[GPT Task Manager] Simple task error:", error);
-      new import_obsidian6.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
+      new import_obsidian8.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
   /**
@@ -1910,7 +3040,7 @@ var GptTaskManagerPlugin = class extends import_obsidian6.Plugin {
   async createTaskFromSelection(editor) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian6.Notice("Please select some text first");
+      new import_obsidian8.Notice("Please select some text first");
       return;
     }
     if (this.settings.enableSmartSuggestions && this.settings.openAIApiKey) {

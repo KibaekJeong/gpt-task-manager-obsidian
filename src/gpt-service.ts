@@ -1,4 +1,7 @@
-import { requestUrl, RequestUrlResponse } from "obsidian";
+import { callOpenAIChatApi, CancellationToken, OpenAIConfig } from "./api-client";
+import { logger } from "./logger";
+
+const CATEGORY = "GPTService";
 
 /**
  * Result from GPT API call
@@ -7,6 +10,7 @@ export interface GptApiResult {
   success: boolean;
   content: string | null;
   errorMessage: string | null;
+  cancelled?: boolean;
 }
 
 /**
@@ -49,7 +53,20 @@ export interface PrioritizationResult {
 }
 
 /**
- * Call OpenAI Chat Completions API
+ * Extended options for GPT API calls
+ */
+export interface GptApiOptions {
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  timeoutSeconds?: number;
+  maxRetries?: number;
+  cancellationToken?: CancellationToken;
+}
+
+/**
+ * Call OpenAI Chat Completions API with timeout, retry, and cancellation support
  */
 export async function callGptApi(
   prompt: string,
@@ -57,76 +74,86 @@ export async function callGptApi(
   apiKey: string,
   model: string,
   maxTokens: number,
-  temperature: number
+  temperature: number,
+  cancellationToken?: CancellationToken,
+  timeoutSeconds: number = 60,
+  maxRetries: number = 3
 ): Promise<GptApiResult> {
   if (!apiKey) {
+    logger.warn(CATEGORY, "No API key configured");
     return { success: false, content: null, errorMessage: "No API key configured" };
   }
 
-  try {
-    console.log(`[GPT Task Manager] Calling GPT API with model: ${model}`);
+  logger.info(CATEGORY, `Calling GPT API`, { model, maxTokens, temperature });
 
-    const response: RequestUrlResponse = await requestUrl({
-      url: "https://api.openai.com/v1/chat/completions",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        max_tokens: maxTokens,
-        temperature: temperature,
-      }),
-      throw: false,
-    });
+  const config: OpenAIConfig = {
+    apiKey,
+    model,
+    maxTokens,
+    temperature,
+    timeout: timeoutSeconds * 1000,
+    maxRetries,
+  };
 
-    if (response.status !== 200) {
-      let errorMessage = `API error (${response.status})`;
-      const errorBody = response.text || response.json;
+  const response = await callOpenAIChatApi(
+    prompt,
+    systemPrompt,
+    config,
+    cancellationToken
+  );
 
-      if (typeof errorBody === "string") {
-        try {
-          const parsed = JSON.parse(errorBody);
-          errorMessage = parsed?.error?.message || errorMessage;
-        } catch {
-          if (errorBody.length < 200) {
-            errorMessage = errorBody;
-          }
-        }
-      } else if (errorBody?.error?.message) {
-        errorMessage = errorBody.error.message;
-      }
-
-      console.error(`[GPT Task Manager] GPT API error: ${response.status}`, errorBody);
-      return { success: false, content: null, errorMessage };
-    }
-
-    const data = response.json;
-    const content = data?.choices?.[0]?.message?.content;
-
-    if (!content) {
-      return { success: false, content: null, errorMessage: "Empty response from API" };
-    }
-
-    console.log(`[GPT Task Manager] GPT response received: ${content.length} chars`);
-    return { success: true, content, errorMessage: null };
-
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : "Unknown error";
-    console.error("[GPT Task Manager] GPT API call failed:", error);
-    return { success: false, content: null, errorMessage: errorMsg };
+  if (response.cancelled) {
+    logger.info(CATEGORY, "GPT API call was cancelled");
+    return {
+      success: false,
+      content: null,
+      errorMessage: "Request cancelled",
+      cancelled: true,
+    };
   }
+
+  if (!response.success) {
+    logger.error(CATEGORY, "GPT API call failed", { error: response.error });
+    return {
+      success: false,
+      content: null,
+      errorMessage: response.error || "Unknown error",
+    };
+  }
+
+  const content = response.data?.content;
+  if (!content) {
+    logger.warn(CATEGORY, "GPT API returned empty content");
+    return {
+      success: false,
+      content: null,
+      errorMessage: "Empty response from API",
+    };
+  }
+
+  logger.info(CATEGORY, `GPT response received`, { contentLength: content.length });
+  return { success: true, content, errorMessage: null };
+}
+
+/**
+ * Call GPT API with options object (for cleaner API)
+ */
+export async function callGptApiWithOptions(
+  prompt: string,
+  systemPrompt: string,
+  options: GptApiOptions
+): Promise<GptApiResult> {
+  return callGptApi(
+    prompt,
+    systemPrompt,
+    options.apiKey,
+    options.model,
+    options.maxTokens,
+    options.temperature,
+    options.cancellationToken,
+    options.timeoutSeconds,
+    options.maxRetries
+  );
 }
 
 /**
