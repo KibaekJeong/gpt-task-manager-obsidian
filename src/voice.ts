@@ -1,6 +1,7 @@
 import { Modal, App, Notice } from "obsidian";
 import { callWhisperApi, CancellationToken } from "./api-client";
 import { logger } from "./logger";
+import { t } from "./i18n";
 
 const CATEGORY = "Voice";
 
@@ -59,19 +60,19 @@ export class VoiceRecordingModal extends Modal {
     contentEl.addClass("gpt-task-manager-recording-modal");
 
     // Title
-    contentEl.createEl("h3", { text: "🎤 Voice Task Capture" });
+    contentEl.createEl("h3", { text: t("voiceRecording") });
 
     // Recording indicator
     const indicatorEl = contentEl.createDiv({ cls: "recording-indicator" });
     this.recordingDot = indicatorEl.createDiv({ cls: "recording-dot" });
-    this.statusEl = indicatorEl.createSpan({ text: "Ready to record" });
+    this.statusEl = indicatorEl.createSpan({ text: t("voiceRecordingStart") });
 
     // Timer
     this.timerEl = contentEl.createDiv({ cls: "recording-timer", text: "00:00" });
 
     // Instructions
     const instructionsEl = contentEl.createDiv({ cls: "recording-instructions" });
-    instructionsEl.createEl("p", { text: "Speak your task naturally. Examples:" });
+    instructionsEl.createEl("p", { text: t("voiceInstructions") });
     const examplesList = instructionsEl.createEl("ul");
     examplesList.createEl("li", { text: '"Create login page for the app"' });
     examplesList.createEl("li", { text: '"High priority: Fix payment bug by Friday"' });
@@ -95,7 +96,7 @@ export class VoiceRecordingModal extends Modal {
     this.stopBtn.style.display = "none";
     this.stopBtn.onclick = (): void => this.stopRecording();
 
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = (): void => this.cancelRecording();
   }
 
@@ -350,8 +351,10 @@ export function parseVoiceTaskInput(transcription: string): VoiceTaskInput {
   }
 
   // Extract project/epic references
+  // Note: Use word boundary \b to avoid matching partial words like "login" -> "in"
   const projectPatterns = [
-    /(?:for|in|to)\s+(?:the\s+)?(.+?)\s+(?:project|프로젝트)/i,
+    /\b(?:for|in|to)\s+the\s+(.+?)\s+(?:project|프로젝트)/i,
+    /\b(?:for|in|to)\s+(\w+(?:\s+\w+)*?)\s+(?:project|프로젝트)/i,
     /(?:project|프로젝트)[:\s]+(.+?)(?:\.|,|$)/i,
   ];
 
@@ -364,7 +367,8 @@ export function parseVoiceTaskInput(transcription: string): VoiceTaskInput {
   }
 
   const epicPatterns = [
-    /(?:for|in|to)\s+(?:the\s+)?(.+?)\s+(?:epic|에픽)/i,
+    /\b(?:for|in|to)\s+the\s+(.+?)\s+(?:epic|에픽)/i,
+    /\b(?:for|in|to)\s+(\w+(?:\s+\w+)*?)\s+(?:epic|에픽)/i,
     /(?:epic|에픽)[:\s]+(.+?)(?:\.|,|$)/i,
   ];
 

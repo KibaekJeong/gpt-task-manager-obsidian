@@ -55,6 +55,18 @@ export interface GptTaskManagerSettings {
   logLevel: string;
   enableDebugNotices: boolean;
 
+  // Kanban Integration (obsidian-base-kanban)
+  enableKanbanIntegration: boolean;
+  kanbanBoardsFolder: string;
+  defaultKanbanBoardName: string;
+  autoSyncKanbanOnTaskChange: boolean;
+  kanbanStatusMapping: {
+    backlog: string;
+    todo: string;
+    inProgress: string;
+    done: string;
+  };
+
   // GPT Prompts (customizable)
   taskCreationPrompt: string;
   taskBreakdownPrompt: string;
@@ -99,6 +111,18 @@ export const DEFAULT_SETTINGS: GptTaskManagerSettings = {
 
   defaultStatus: "backlog",
   defaultPriority: "medium",
+
+  // Kanban Integration defaults
+  enableKanbanIntegration: false,
+  kanbanBoardsFolder: "500 Plan & Reflect/530 Boards",
+  defaultKanbanBoardName: "All Tasks Board",
+  autoSyncKanbanOnTaskChange: true,
+  kanbanStatusMapping: {
+    backlog: "Backlog",
+    todo: "To Do",
+    inProgress: "In Progress",
+    done: "Done",
+  },
 
   taskCreationPrompt: `You are an expert task manager assistant. Based on the user's input and their current goals/projects context, help create well-structured tasks.
 
@@ -476,6 +500,120 @@ export class GptTaskManagerSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    // Kanban Integration Section
+    containerEl.createEl("h2", { text: "📋 Kanban Integration" });
+    containerEl.createEl("p", {
+      text: "Integrate with obsidian-base-kanban plugin to view and manage tasks in a Kanban board format.",
+      cls: "setting-item-description",
+    });
+
+    new Setting(containerEl)
+      .setName("Enable Kanban Integration")
+      .setDesc("Enable integration with obsidian-base-kanban plugin for visual task management.")
+      .addToggle((toggle: ToggleComponent) =>
+        toggle
+          .setValue(this.plugin.settings.enableKanbanIntegration)
+          .onChange(async (value: boolean) => {
+            this.plugin.settings.enableKanbanIntegration = value;
+            await this.plugin.saveSettings();
+            this.display(); // Refresh to show/hide dependent settings
+          })
+      );
+
+    if (this.plugin.settings.enableKanbanIntegration) {
+      new Setting(containerEl)
+        .setName("Kanban Boards Folder")
+        .setDesc("Folder where Kanban board files will be stored.")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("500 Plan & Reflect/530 Boards")
+            .setValue(this.plugin.settings.kanbanBoardsFolder)
+            .onChange(async (value: string) => {
+              this.plugin.settings.kanbanBoardsFolder = normalizePath(value.trim());
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Default Board Name")
+        .setDesc("Name for the default 'All Tasks' Kanban board.")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("All Tasks Board")
+            .setValue(this.plugin.settings.defaultKanbanBoardName)
+            .onChange(async (value: string) => {
+              this.plugin.settings.defaultKanbanBoardName = value.trim() || "All Tasks Board";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Auto-sync on Task Change")
+        .setDesc("Automatically refresh Kanban board when tasks are created or modified.")
+        .addToggle((toggle: ToggleComponent) =>
+          toggle
+            .setValue(this.plugin.settings.autoSyncKanbanOnTaskChange)
+            .onChange(async (value: boolean) => {
+              this.plugin.settings.autoSyncKanbanOnTaskChange = value;
+              await this.plugin.saveSettings();
+            })
+        );
+
+      containerEl.createEl("h3", { text: "Lane ↔ Status Mapping" });
+      containerEl.createEl("p", {
+        text: "Map task status values to Kanban lane names. These should match the lane titles in obsidian-base-kanban.",
+        cls: "setting-item-description",
+      });
+
+      new Setting(containerEl)
+        .setName("Backlog Lane Name")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("Backlog")
+            .setValue(this.plugin.settings.kanbanStatusMapping.backlog)
+            .onChange(async (value: string) => {
+              this.plugin.settings.kanbanStatusMapping.backlog = value.trim() || "Backlog";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("To Do Lane Name")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("To Do")
+            .setValue(this.plugin.settings.kanbanStatusMapping.todo)
+            .onChange(async (value: string) => {
+              this.plugin.settings.kanbanStatusMapping.todo = value.trim() || "To Do";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("In Progress Lane Name")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("In Progress")
+            .setValue(this.plugin.settings.kanbanStatusMapping.inProgress)
+            .onChange(async (value: string) => {
+              this.plugin.settings.kanbanStatusMapping.inProgress = value.trim() || "In Progress";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Done Lane Name")
+        .addText((text: TextComponent) =>
+          text
+            .setPlaceholder("Done")
+            .setValue(this.plugin.settings.kanbanStatusMapping.done)
+            .onChange(async (value: string) => {
+              this.plugin.settings.kanbanStatusMapping.done = value.trim() || "Done";
+              await this.plugin.saveSettings();
+            })
+        );
+    }
 
     // Logging Section
     containerEl.createEl("h2", { text: "🔍 Logging & Debugging" });

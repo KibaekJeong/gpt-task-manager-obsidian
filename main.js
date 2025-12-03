@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => GptTaskManagerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -62,6 +62,17 @@ var DEFAULT_SETTINGS = {
   enableDebugNotices: false,
   defaultStatus: "backlog",
   defaultPriority: "medium",
+  // Kanban Integration defaults
+  enableKanbanIntegration: false,
+  kanbanBoardsFolder: "500 Plan & Reflect/530 Boards",
+  defaultKanbanBoardName: "All Tasks Board",
+  autoSyncKanbanOnTaskChange: true,
+  kanbanStatusMapping: {
+    backlog: "Backlog",
+    todo: "To Do",
+    inProgress: "In Progress",
+    done: "Done"
+  },
   taskCreationPrompt: `You are an expert task manager assistant. Based on the user's input and their current goals/projects context, help create well-structured tasks.
 
 USER CONTEXT:
@@ -286,6 +297,67 @@ var GptTaskManagerSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h2", { text: "\u{1F4CB} Kanban Integration" });
+    containerEl.createEl("p", {
+      text: "Integrate with obsidian-base-kanban plugin to view and manage tasks in a Kanban board format.",
+      cls: "setting-item-description"
+    });
+    new import_obsidian.Setting(containerEl).setName("Enable Kanban Integration").setDesc("Enable integration with obsidian-base-kanban plugin for visual task management.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.enableKanbanIntegration).onChange(async (value) => {
+        this.plugin.settings.enableKanbanIntegration = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    if (this.plugin.settings.enableKanbanIntegration) {
+      new import_obsidian.Setting(containerEl).setName("Kanban Boards Folder").setDesc("Folder where Kanban board files will be stored.").addText(
+        (text) => text.setPlaceholder("500 Plan & Reflect/530 Boards").setValue(this.plugin.settings.kanbanBoardsFolder).onChange(async (value) => {
+          this.plugin.settings.kanbanBoardsFolder = (0, import_obsidian.normalizePath)(value.trim());
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("Default Board Name").setDesc("Name for the default 'All Tasks' Kanban board.").addText(
+        (text) => text.setPlaceholder("All Tasks Board").setValue(this.plugin.settings.defaultKanbanBoardName).onChange(async (value) => {
+          this.plugin.settings.defaultKanbanBoardName = value.trim() || "All Tasks Board";
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("Auto-sync on Task Change").setDesc("Automatically refresh Kanban board when tasks are created or modified.").addToggle(
+        (toggle) => toggle.setValue(this.plugin.settings.autoSyncKanbanOnTaskChange).onChange(async (value) => {
+          this.plugin.settings.autoSyncKanbanOnTaskChange = value;
+          await this.plugin.saveSettings();
+        })
+      );
+      containerEl.createEl("h3", { text: "Lane \u2194 Status Mapping" });
+      containerEl.createEl("p", {
+        text: "Map task status values to Kanban lane names. These should match the lane titles in obsidian-base-kanban.",
+        cls: "setting-item-description"
+      });
+      new import_obsidian.Setting(containerEl).setName("Backlog Lane Name").addText(
+        (text) => text.setPlaceholder("Backlog").setValue(this.plugin.settings.kanbanStatusMapping.backlog).onChange(async (value) => {
+          this.plugin.settings.kanbanStatusMapping.backlog = value.trim() || "Backlog";
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("To Do Lane Name").addText(
+        (text) => text.setPlaceholder("To Do").setValue(this.plugin.settings.kanbanStatusMapping.todo).onChange(async (value) => {
+          this.plugin.settings.kanbanStatusMapping.todo = value.trim() || "To Do";
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("In Progress Lane Name").addText(
+        (text) => text.setPlaceholder("In Progress").setValue(this.plugin.settings.kanbanStatusMapping.inProgress).onChange(async (value) => {
+          this.plugin.settings.kanbanStatusMapping.inProgress = value.trim() || "In Progress";
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("Done Lane Name").addText(
+        (text) => text.setPlaceholder("Done").setValue(this.plugin.settings.kanbanStatusMapping.done).onChange(async (value) => {
+          this.plugin.settings.kanbanStatusMapping.done = value.trim() || "Done";
+          await this.plugin.saveSettings();
+        })
+      );
+    }
     containerEl.createEl("h2", { text: "\u{1F50D} Logging & Debugging" });
     new import_obsidian.Setting(containerEl).setName("Log Level").setDesc("Minimum log level for console output.").addDropdown(
       (dropdown) => dropdown.addOption("debug", "Debug (Verbose)").addOption("info", "Info (Normal)").addOption("warn", "Warnings Only").addOption("error", "Errors Only").addOption("none", "Disabled").setValue(this.plugin.settings.logLevel).onChange(async (value) => {
@@ -1009,6 +1081,281 @@ function fillPromptTemplate(template, values) {
 
 // src/voice.ts
 var import_obsidian3 = require("obsidian");
+
+// src/i18n.ts
+var en = {
+  // Common
+  cancel: "Cancel",
+  confirm: "Confirm",
+  create: "Create",
+  save: "Save",
+  delete: "Delete",
+  close: "Close",
+  loading: "Loading...",
+  error: "Error",
+  success: "Success",
+  retry: "Retry",
+  // Task creation
+  quickTaskTitle: "\u{1F680} Quick Task Creation",
+  quickTaskDescription: "Describe your task naturally. GPT will help structure it based on your goals and projects.",
+  quickTaskPlaceholder: "e.g., Create a landing page for the Freedom Runway project with high priority",
+  createWithAi: "\u2728 Create with AI",
+  simpleCreate: "Create (No AI)",
+  taskCreationCancelled: "Task creation cancelled",
+  taskCreated: "\u2705 Created task: {title}",
+  taskCreationFailed: "Failed to create task: {error}",
+  pleaseEnterDescription: "Please enter a task description",
+  pleaseSelectText: "Please select some text first",
+  // Voice
+  voiceRecording: "\u{1F3A4} Voice Recording",
+  voiceRecordingStart: "Start Recording",
+  voiceRecordingStop: "Stop Recording",
+  voiceRecordingCancel: "Cancel",
+  voiceTranscribing: "\u{1F3A4} Transcribing...",
+  voiceInstructions: "Speak clearly and describe your task. Include priority, epic, or project names if relevant.",
+  // Review modal
+  reviewTask: "\u{1F4CB} Review Task",
+  reviewTitle: "Title",
+  reviewObjective: "Objective",
+  reviewImportance: "Why it matters",
+  reviewEpic: "Epic",
+  reviewPriority: "Priority",
+  reviewSubtasks: "Suggested Subtasks ({count})",
+  noEpic: "-- No Epic --",
+  createTask: "\u2713 Create Task",
+  // Breakdown
+  breakdownTitle: "\u{1F4CA} Task Breakdown: {epic}",
+  breakdownDescription: "{count} tasks will be created:",
+  breakdownTaskCount: "{count} tasks",
+  breakdownDependsOn: "Depends on: Task {index}",
+  breakdownCreating: "\u{1F916} Breaking down: {epic}...",
+  // Confirmation
+  confirmTaskCreation: "\u{1F4CB} Confirm Task Creation ({count} tasks)",
+  confirmTaskCreationSingle: "\u{1F4CB} Confirm Task Creation",
+  confirmTasksWillBeCreated: "The following tasks will be created:",
+  confirmTargetFolder: "\u{1F4C1} {folder}",
+  confirmCreateTasks: "\u2713 Create {count} Tasks",
+  confirmCreateTask: "\u2713 Create Task",
+  // Errors
+  errorNoApiKey: "Please set your OpenAI API key in settings first.",
+  errorVoiceDisabled: "Voice input is disabled. Enable it in settings.",
+  errorNoEpics: "No epics found in your vault.",
+  errorNoSelection: "Please select some text first.",
+  errorRateLimited: "Rate limited. Please wait {seconds} seconds.",
+  errorTimeout: "Request timed out. Please try again.",
+  errorServerError: "Server error. Please try again later.",
+  errorAuthFailed: "Authentication failed. Please check your API key.",
+  errorParsingFailed: "Failed to parse GPT response. Creating simple task.",
+  errorBreakdownTooLarge: "GPT returned {count} tasks (max {max}). Truncated to first {max}.",
+  errorBreakdownEmpty: "GPT returned no tasks. Please try again or adjust your epic description.",
+  // Progress
+  progressProcessing: "\u{1F916} Processing with GPT...",
+  progressBreakingDown: "\u{1F916} Breaking down epic...",
+  progressCreatingTasks: "Creating tasks...",
+  progressTranscribing: "\u{1F3A4} Transcribing audio...",
+  // Settings
+  settingsApiConfig: "\u{1F511} API Configuration",
+  settingsVaultPaths: "\u{1F4C1} Vault Paths",
+  settingsFeatures: "\u26A1 Features",
+  settingsDefaults: "\u{1F4CB} Task Defaults",
+  settingsPrompts: "\u{1F916} GPT Prompts",
+  settingsReset: "\u{1F504} Reset",
+  // Conflict resolution
+  conflictFileExists: "File already exists: {filename}",
+  conflictRename: "Rename",
+  conflictOverwrite: "Overwrite",
+  conflictSkip: "Skip",
+  // Accessibility
+  ariaCloseModal: "Close modal",
+  ariaConfirmButton: "Confirm action",
+  ariaCancelButton: "Cancel action",
+  ariaLoadingIndicator: "Loading, please wait",
+  ariaTaskList: "Task list",
+  ariaPriorityBadge: "Priority: {priority}",
+  // Kanban Integration
+  kanbanNotEnabled: "Kanban integration is not enabled. Enable it in settings.",
+  kanbanLoading: "\u{1F4CB} Loading Kanban board...",
+  kanbanLoadingEpic: "\u{1F4CB} Loading Kanban board for Epic: {epic}...",
+  kanbanLoadingProject: "\u{1F4CB} Loading Kanban board for Project: {project}...",
+  kanbanNoProjects: "No projects found in your vault.",
+  kanbanNoActiveBoard: "No Kanban board is currently open.",
+  kanbanNotABoard: "The current file is not a Kanban board.",
+  kanbanRefreshed: "\u2705 Kanban board refreshed",
+  kanbanOpenAllTasks: "Open All Tasks Board",
+  kanbanOpenEpicBoard: "Open Board for Epic",
+  kanbanOpenProjectBoard: "Open Board for Project"
+};
+var ko = {
+  // Common
+  cancel: "\uCDE8\uC18C",
+  confirm: "\uD655\uC778",
+  create: "\uC0DD\uC131",
+  save: "\uC800\uC7A5",
+  delete: "\uC0AD\uC81C",
+  close: "\uB2EB\uAE30",
+  loading: "\uB85C\uB529 \uC911...",
+  error: "\uC624\uB958",
+  success: "\uC131\uACF5",
+  retry: "\uC7AC\uC2DC\uB3C4",
+  // Task creation
+  quickTaskTitle: "\u{1F680} \uBE60\uB978 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  quickTaskDescription: "\uD0DC\uC2A4\uD06C\uB97C \uC790\uC5F0\uC2A4\uB7FD\uAC8C \uC124\uBA85\uD558\uC138\uC694. GPT\uAC00 \uBAA9\uD45C\uC640 \uD504\uB85C\uC81D\uD2B8\uC5D0 \uB9DE\uAC8C \uAD6C\uC870\uD654\uD569\uB2C8\uB2E4.",
+  quickTaskPlaceholder: "\uC608: Freedom Runway \uD504\uB85C\uC81D\uD2B8\uC758 \uB79C\uB529 \uD398\uC774\uC9C0\uB97C \uB192\uC740 \uC6B0\uC120\uC21C\uC704\uB85C \uB9CC\uB4E4\uAE30",
+  createWithAi: "\u2728 AI\uB85C \uC0DD\uC131",
+  simpleCreate: "\uC0DD\uC131 (AI \uC5C6\uC774)",
+  taskCreationCancelled: "\uD0DC\uC2A4\uD06C \uC0DD\uC131\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4",
+  taskCreated: "\u2705 \uD0DC\uC2A4\uD06C \uC0DD\uC131\uB428: {title}",
+  taskCreationFailed: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC2E4\uD328: {error}",
+  pleaseEnterDescription: "\uD0DC\uC2A4\uD06C \uC124\uBA85\uC744 \uC785\uB825\uD558\uC138\uC694",
+  pleaseSelectText: "\uBA3C\uC800 \uD14D\uC2A4\uD2B8\uB97C \uC120\uD0DD\uD558\uC138\uC694",
+  // Voice
+  voiceRecording: "\u{1F3A4} \uC74C\uC131 \uB179\uC74C",
+  voiceRecordingStart: "\uB179\uC74C \uC2DC\uC791",
+  voiceRecordingStop: "\uB179\uC74C \uC911\uC9C0",
+  voiceRecordingCancel: "\uCDE8\uC18C",
+  voiceTranscribing: "\u{1F3A4} \uBCC0\uD658 \uC911...",
+  voiceInstructions: "\uBA85\uD655\uD558\uAC8C \uB9D0\uD558\uACE0 \uD0DC\uC2A4\uD06C\uB97C \uC124\uBA85\uD558\uC138\uC694. \uC6B0\uC120\uC21C\uC704, \uC5D0\uD53D \uB610\uB294 \uD504\uB85C\uC81D\uD2B8 \uC774\uB984\uC744 \uD3EC\uD568\uD558\uC138\uC694.",
+  // Review modal
+  reviewTask: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAC80\uD1A0",
+  reviewTitle: "\uC81C\uBAA9",
+  reviewObjective: "\uBAA9\uD45C",
+  reviewImportance: "\uC911\uC694\uD55C \uC774\uC720",
+  reviewEpic: "\uC5D0\uD53D",
+  reviewPriority: "\uC6B0\uC120\uC21C\uC704",
+  reviewSubtasks: "\uC81C\uC548\uB41C \uD558\uC704 \uD0DC\uC2A4\uD06C ({count})",
+  noEpic: "-- \uC5D0\uD53D \uC5C6\uC74C --",
+  createTask: "\u2713 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  // Breakdown
+  breakdownTitle: "\u{1F4CA} \uD0DC\uC2A4\uD06C \uBD84\uD574: {epic}",
+  breakdownDescription: "{count}\uAC1C\uC758 \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
+  breakdownTaskCount: "{count}\uAC1C \uD0DC\uC2A4\uD06C",
+  breakdownDependsOn: "\uC758\uC874: \uD0DC\uC2A4\uD06C {index}",
+  breakdownCreating: "\u{1F916} \uBD84\uD574 \uC911: {epic}...",
+  // Confirmation
+  confirmTaskCreation: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778 ({count}\uAC1C)",
+  confirmTaskCreationSingle: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778",
+  confirmTasksWillBeCreated: "\uB2E4\uC74C \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
+  confirmTargetFolder: "\u{1F4C1} {folder}",
+  confirmCreateTasks: "\u2713 {count}\uAC1C \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  confirmCreateTask: "\u2713 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
+  // Errors
+  errorNoApiKey: "\uBA3C\uC800 \uC124\uC815\uC5D0\uC11C OpenAI API \uD0A4\uB97C \uC124\uC815\uD558\uC138\uC694.",
+  errorVoiceDisabled: "\uC74C\uC131 \uC785\uB825\uC774 \uBE44\uD65C\uC131\uD654\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD65C\uC131\uD654\uD558\uC138\uC694.",
+  errorNoEpics: "\uBCFC\uD2B8\uC5D0\uC11C \uC5D0\uD53D\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  errorNoSelection: "\uBA3C\uC800 \uD14D\uC2A4\uD2B8\uB97C \uC120\uD0DD\uD558\uC138\uC694.",
+  errorRateLimited: "\uC694\uCCAD \uC81C\uD55C\uB428. {seconds}\uCD08 \uD6C4\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorTimeout: "\uC694\uCCAD \uC2DC\uAC04 \uCD08\uACFC. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorServerError: "\uC11C\uBC84 \uC624\uB958. \uB098\uC911\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
+  errorAuthFailed: "\uC778\uC99D \uC2E4\uD328. API \uD0A4\uB97C \uD655\uC778\uD558\uC138\uC694.",
+  errorParsingFailed: "GPT \uC751\uB2F5 \uD30C\uC2F1 \uC2E4\uD328. \uAC04\uB2E8\uD55C \uD0DC\uC2A4\uD06C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4.",
+  errorBreakdownTooLarge: "GPT\uAC00 {count}\uAC1C \uD0DC\uC2A4\uD06C\uB97C \uBC18\uD658\uD588\uC2B5\uB2C8\uB2E4 (\uCD5C\uB300 {max}). \uCC98\uC74C {max}\uAC1C\uB9CC \uC0AC\uC6A9\uD569\uB2C8\uB2E4.",
+  errorBreakdownEmpty: "GPT\uAC00 \uD0DC\uC2A4\uD06C\uB97C \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uAC70\uB098 \uC5D0\uD53D \uC124\uBA85\uC744 \uC218\uC815\uD558\uC138\uC694.",
+  // Progress
+  progressProcessing: "\u{1F916} GPT\uB85C \uCC98\uB9AC \uC911...",
+  progressBreakingDown: "\u{1F916} \uC5D0\uD53D \uBD84\uD574 \uC911...",
+  progressCreatingTasks: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC911...",
+  progressTranscribing: "\u{1F3A4} \uC624\uB514\uC624 \uBCC0\uD658 \uC911...",
+  // Settings
+  settingsApiConfig: "\u{1F511} API \uC124\uC815",
+  settingsVaultPaths: "\u{1F4C1} \uBCFC\uD2B8 \uACBD\uB85C",
+  settingsFeatures: "\u26A1 \uAE30\uB2A5",
+  settingsDefaults: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAE30\uBCF8\uAC12",
+  settingsPrompts: "\u{1F916} GPT \uD504\uB86C\uD504\uD2B8",
+  settingsReset: "\u{1F504} \uCD08\uAE30\uD654",
+  // Conflict resolution
+  conflictFileExists: "\uD30C\uC77C\uC774 \uC774\uBBF8 \uC874\uC7AC\uD569\uB2C8\uB2E4: {filename}",
+  conflictRename: "\uC774\uB984 \uBCC0\uACBD",
+  conflictOverwrite: "\uB36E\uC5B4\uC4F0\uAE30",
+  conflictSkip: "\uAC74\uB108\uB6F0\uAE30",
+  // Accessibility
+  ariaCloseModal: "\uBAA8\uB2EC \uB2EB\uAE30",
+  ariaConfirmButton: "\uC791\uC5C5 \uD655\uC778",
+  ariaCancelButton: "\uC791\uC5C5 \uCDE8\uC18C",
+  ariaLoadingIndicator: "\uB85C\uB529 \uC911\uC785\uB2C8\uB2E4. \uC7A0\uC2DC \uAE30\uB2E4\uB824\uC8FC\uC138\uC694",
+  ariaTaskList: "\uD0DC\uC2A4\uD06C \uBAA9\uB85D",
+  ariaPriorityBadge: "\uC6B0\uC120\uC21C\uC704: {priority}",
+  // Kanban Integration
+  kanbanNotEnabled: "\uCE78\uBC18 \uD1B5\uD569\uC774 \uD65C\uC131\uD654\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD65C\uC131\uD654\uD558\uC138\uC694.",
+  kanbanLoading: "\u{1F4CB} \uCE78\uBC18 \uBCF4\uB4DC \uB85C\uB529 \uC911...",
+  kanbanLoadingEpic: "\u{1F4CB} \uC5D0\uD53D \uCE78\uBC18 \uBCF4\uB4DC \uB85C\uB529 \uC911: {epic}...",
+  kanbanLoadingProject: "\u{1F4CB} \uD504\uB85C\uC81D\uD2B8 \uCE78\uBC18 \uBCF4\uB4DC \uB85C\uB529 \uC911: {project}...",
+  kanbanNoProjects: "\uBCFC\uD2B8\uC5D0\uC11C \uD504\uB85C\uC81D\uD2B8\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  kanbanNoActiveBoard: "\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uCE78\uBC18 \uBCF4\uB4DC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  kanbanNotABoard: "\uD604\uC7AC \uD30C\uC77C\uC740 \uCE78\uBC18 \uBCF4\uB4DC\uAC00 \uC544\uB2D9\uB2C8\uB2E4.",
+  kanbanRefreshed: "\u2705 \uCE78\uBC18 \uBCF4\uB4DC\uAC00 \uC0C8\uB85C\uACE0\uCE68\uB418\uC5C8\uC2B5\uB2C8\uB2E4",
+  kanbanOpenAllTasks: "\uC804\uCCB4 \uD0DC\uC2A4\uD06C \uBCF4\uB4DC \uC5F4\uAE30",
+  kanbanOpenEpicBoard: "\uC5D0\uD53D \uBCF4\uB4DC \uC5F4\uAE30",
+  kanbanOpenProjectBoard: "\uD504\uB85C\uC81D\uD2B8 \uBCF4\uB4DC \uC5F4\uAE30"
+};
+var ja = {
+  ...en,
+  // Fallback to English for incomplete translations
+  cancel: "\u30AD\u30E3\u30F3\u30BB\u30EB",
+  confirm: "\u78BA\u8A8D",
+  create: "\u4F5C\u6210",
+  save: "\u4FDD\u5B58",
+  delete: "\u524A\u9664",
+  close: "\u9589\u3058\u308B",
+  loading: "\u8AAD\u307F\u8FBC\u307F\u4E2D...",
+  error: "\u30A8\u30E9\u30FC",
+  success: "\u6210\u529F",
+  retry: "\u518D\u8A66\u884C",
+  quickTaskTitle: "\u{1F680} \u30AF\u30A4\u30C3\u30AF\u30BF\u30B9\u30AF\u4F5C\u6210",
+  createWithAi: "\u2728 AI\u3067\u4F5C\u6210",
+  taskCreationCancelled: "\u30BF\u30B9\u30AF\u4F5C\u6210\u304C\u30AD\u30E3\u30F3\u30BB\u30EB\u3055\u308C\u307E\u3057\u305F",
+  // Kanban
+  kanbanNotEnabled: "\u30AB\u30F3\u30D0\u30F3\u7D71\u5408\u304C\u6709\u52B9\u306B\u306A\u3063\u3066\u3044\u307E\u305B\u3093\u3002\u8A2D\u5B9A\u3067\u6709\u52B9\u306B\u3057\u3066\u304F\u3060\u3055\u3044\u3002",
+  kanbanLoading: "\u{1F4CB} \u30AB\u30F3\u30D0\u30F3\u30DC\u30FC\u30C9\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D...",
+  kanbanRefreshed: "\u2705 \u30AB\u30F3\u30D0\u30F3\u30DC\u30FC\u30C9\u3092\u66F4\u65B0\u3057\u307E\u3057\u305F"
+};
+var zh = {
+  ...en,
+  // Fallback to English for incomplete translations
+  cancel: "\u53D6\u6D88",
+  confirm: "\u786E\u8BA4",
+  create: "\u521B\u5EFA",
+  save: "\u4FDD\u5B58",
+  delete: "\u5220\u9664",
+  close: "\u5173\u95ED",
+  loading: "\u52A0\u8F7D\u4E2D...",
+  error: "\u9519\u8BEF",
+  success: "\u6210\u529F",
+  retry: "\u91CD\u8BD5",
+  quickTaskTitle: "\u{1F680} \u5FEB\u901F\u521B\u5EFA\u4EFB\u52A1",
+  createWithAi: "\u2728 AI\u521B\u5EFA",
+  taskCreationCancelled: "\u4EFB\u52A1\u521B\u5EFA\u5DF2\u53D6\u6D88",
+  // Kanban
+  kanbanNotEnabled: "\u770B\u677F\u96C6\u6210\u672A\u542F\u7528\u3002\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u542F\u7528\u3002",
+  kanbanLoading: "\u{1F4CB} \u6B63\u5728\u52A0\u8F7D\u770B\u677F...",
+  kanbanRefreshed: "\u2705 \u770B\u677F\u5DF2\u5237\u65B0"
+};
+var translations = {
+  en,
+  ko,
+  ja,
+  zh
+};
+var currentLocale = "en";
+function setLocale(locale) {
+  if (translations[locale]) {
+    currentLocale = locale;
+  } else {
+    console.warn(`[GPT Task Manager] Unsupported locale: ${locale}, falling back to English`);
+    currentLocale = "en";
+  }
+}
+function t(key, params) {
+  const strings = translations[currentLocale] || translations.en;
+  let text = strings[key] || translations.en[key] || key;
+  if (params) {
+    for (const [paramKey, value] of Object.entries(params)) {
+      text = text.replace(new RegExp(`\\{${paramKey}\\}`, "g"), String(value));
+    }
+  }
+  return text;
+}
+
+// src/voice.ts
 var CATEGORY3 = "Voice";
 var VoiceRecordingModal = class extends import_obsidian3.Modal {
   constructor(app, onComplete, onCancel) {
@@ -1030,13 +1377,13 @@ var VoiceRecordingModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("gpt-task-manager-recording-modal");
-    contentEl.createEl("h3", { text: "\u{1F3A4} Voice Task Capture" });
+    contentEl.createEl("h3", { text: t("voiceRecording") });
     const indicatorEl = contentEl.createDiv({ cls: "recording-indicator" });
     this.recordingDot = indicatorEl.createDiv({ cls: "recording-dot" });
-    this.statusEl = indicatorEl.createSpan({ text: "Ready to record" });
+    this.statusEl = indicatorEl.createSpan({ text: t("voiceRecordingStart") });
     this.timerEl = contentEl.createDiv({ cls: "recording-timer", text: "00:00" });
     const instructionsEl = contentEl.createDiv({ cls: "recording-instructions" });
-    instructionsEl.createEl("p", { text: "Speak your task naturally. Examples:" });
+    instructionsEl.createEl("p", { text: t("voiceInstructions") });
     const examplesList = instructionsEl.createEl("ul");
     examplesList.createEl("li", { text: '"Create login page for the app"' });
     examplesList.createEl("li", { text: '"High priority: Fix payment bug by Friday"' });
@@ -1055,7 +1402,7 @@ var VoiceRecordingModal = class extends import_obsidian3.Modal {
     });
     this.stopBtn.style.display = "none";
     this.stopBtn.onclick = () => this.stopRecording();
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = () => this.cancelRecording();
   }
   async initiateRecording() {
@@ -1226,7 +1573,8 @@ function parseVoiceTaskInput(transcription) {
     }
   }
   const projectPatterns = [
-    /(?:for|in|to)\s+(?:the\s+)?(.+?)\s+(?:project|프로젝트)/i,
+    /\b(?:for|in|to)\s+the\s+(.+?)\s+(?:project|프로젝트)/i,
+    /\b(?:for|in|to)\s+(\w+(?:\s+\w+)*?)\s+(?:project|프로젝트)/i,
     /(?:project|프로젝트)[:\s]+(.+?)(?:\.|,|$)/i
   ];
   for (const pattern of projectPatterns) {
@@ -1237,7 +1585,8 @@ function parseVoiceTaskInput(transcription) {
     }
   }
   const epicPatterns = [
-    /(?:for|in|to)\s+(?:the\s+)?(.+?)\s+(?:epic|에픽)/i,
+    /\b(?:for|in|to)\s+the\s+(.+?)\s+(?:epic|에픽)/i,
+    /\b(?:for|in|to)\s+(\w+(?:\s+\w+)*?)\s+(?:epic|에픽)/i,
     /(?:epic|에픽)[:\s]+(.+?)(?:\.|,|$)/i
   ];
   for (const pattern of epicPatterns) {
@@ -1936,6 +2285,7 @@ var ContextCache = class {
     this.epicsCache = new Cache(config);
     this.tasksCache = new Cache(config);
     this.metadataCache = new Cache(config);
+    this.userContextCache = new Cache(config);
     this.setupEventListeners();
   }
   /**
@@ -1983,7 +2333,22 @@ var ContextCache = class {
     }, this.debounceMs);
   }
   /**
+   * Get cached full UserContext or load it atomically.
+   * This is the preferred method – it loads all context arrays in one call
+   * ensuring a consistent snapshot and avoiding redundant vault scans.
+   */
+  getUserContext(key, loader) {
+    const cached = this.userContextCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.userContextCache.set(key, data);
+    return data;
+  }
+  /**
    * Get cached goals or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
   getGoals(key, loader) {
     const cached = this.goalsCache.get(key);
@@ -1996,6 +2361,7 @@ var ContextCache = class {
   }
   /**
    * Get cached projects or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
   getProjects(key, loader) {
     const cached = this.projectsCache.get(key);
@@ -2008,6 +2374,7 @@ var ContextCache = class {
   }
   /**
    * Get cached epics or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
   getEpics(key, loader) {
     const cached = this.epicsCache.get(key);
@@ -2020,6 +2387,7 @@ var ContextCache = class {
   }
   /**
    * Get cached tasks or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
   getTasks(key, loader) {
     const cached = this.tasksCache.get(key);
@@ -2051,6 +2419,7 @@ var ContextCache = class {
     this.epicsCache.invalidateAll();
     this.tasksCache.invalidateAll();
     this.metadataCache.invalidateAll();
+    this.userContextCache.invalidateAll();
     logger.info(CATEGORY4, "All caches invalidated");
   }
   /**
@@ -2062,6 +2431,7 @@ var ContextCache = class {
     this.epicsCache.clear();
     this.tasksCache.clear();
     this.metadataCache.clear();
+    this.userContextCache.clear();
     logger.info(CATEGORY4, "All caches cleared");
   }
   /**
@@ -2073,7 +2443,8 @@ var ContextCache = class {
       projects: this.projectsCache.getStats(),
       epics: this.epicsCache.getStats(),
       tasks: this.tasksCache.getStats(),
-      metadata: this.metadataCache.getStats()
+      metadata: this.metadataCache.getStats(),
+      userContext: this.userContextCache.getStats()
     };
   }
   /**
@@ -2093,239 +2464,241 @@ var ContextCache = class {
   }
 };
 
-// src/i18n.ts
-var en = {
-  // Common
-  cancel: "Cancel",
-  confirm: "Confirm",
-  create: "Create",
-  save: "Save",
-  delete: "Delete",
-  close: "Close",
-  loading: "Loading...",
-  error: "Error",
-  success: "Success",
-  retry: "Retry",
-  // Task creation
-  quickTaskTitle: "\u{1F680} Quick Task Creation",
-  quickTaskDescription: "Describe your task naturally. GPT will help structure it based on your goals and projects.",
-  quickTaskPlaceholder: "e.g., Create a landing page for the Freedom Runway project with high priority",
-  createWithAi: "\u2728 Create with AI",
-  simpleCreate: "Create (No AI)",
-  taskCreationCancelled: "Task creation cancelled",
-  taskCreated: "\u2705 Created task: {title}",
-  taskCreationFailed: "Failed to create task: {error}",
-  // Voice
-  voiceRecording: "\u{1F3A4} Voice Recording",
-  voiceRecordingStart: "Start Recording",
-  voiceRecordingStop: "Stop Recording",
-  voiceRecordingCancel: "Cancel",
-  voiceTranscribing: "\u{1F3A4} Transcribing...",
-  voiceInstructions: "Speak clearly and describe your task. Include priority, epic, or project names if relevant.",
-  // Review modal
-  reviewTask: "\u{1F4CB} Review Task",
-  reviewTitle: "Title",
-  reviewObjective: "Objective",
-  reviewImportance: "Why it matters",
-  reviewEpic: "Epic",
-  reviewPriority: "Priority",
-  reviewSubtasks: "Suggested Subtasks ({count})",
-  noEpic: "-- No Epic --",
-  // Breakdown
-  breakdownTitle: "\u{1F4CA} Task Breakdown: {epic}",
-  breakdownDescription: "{count} tasks will be created:",
-  breakdownTaskCount: "{count} tasks",
-  breakdownDependsOn: "Depends on: Task {index}",
-  breakdownCreating: "\u{1F916} Breaking down: {epic}...",
-  // Confirmation
-  confirmTaskCreation: "\u{1F4CB} Confirm Task Creation ({count} tasks)",
-  confirmTaskCreationSingle: "\u{1F4CB} Confirm Task Creation",
-  confirmTasksWillBeCreated: "The following tasks will be created:",
-  confirmTargetFolder: "\u{1F4C1} {folder}",
-  confirmCreateTasks: "\u2713 Create {count} Tasks",
-  confirmCreateTask: "\u2713 Create Task",
-  // Errors
-  errorNoApiKey: "Please set your OpenAI API key in settings first.",
-  errorVoiceDisabled: "Voice input is disabled. Enable it in settings.",
-  errorNoEpics: "No epics found in your vault.",
-  errorNoSelection: "Please select some text first.",
-  errorRateLimited: "Rate limited. Please wait {seconds} seconds.",
-  errorTimeout: "Request timed out. Please try again.",
-  errorServerError: "Server error. Please try again later.",
-  errorAuthFailed: "Authentication failed. Please check your API key.",
-  errorParsingFailed: "Failed to parse GPT response. Creating simple task.",
-  // Progress
-  progressProcessing: "\u{1F916} Processing with GPT...",
-  progressBreakingDown: "\u{1F916} Breaking down epic...",
-  progressCreatingTasks: "Creating tasks...",
-  progressTranscribing: "\u{1F3A4} Transcribing audio...",
-  // Settings
-  settingsApiConfig: "\u{1F511} API Configuration",
-  settingsVaultPaths: "\u{1F4C1} Vault Paths",
-  settingsFeatures: "\u26A1 Features",
-  settingsDefaults: "\u{1F4CB} Task Defaults",
-  settingsPrompts: "\u{1F916} GPT Prompts",
-  settingsReset: "\u{1F504} Reset",
-  // Conflict resolution
-  conflictFileExists: "File already exists: {filename}",
-  conflictRename: "Rename",
-  conflictOverwrite: "Overwrite",
-  conflictSkip: "Skip",
-  // Accessibility
-  ariaCloseModal: "Close modal",
-  ariaConfirmButton: "Confirm action",
-  ariaCancelButton: "Cancel action",
-  ariaLoadingIndicator: "Loading, please wait",
-  ariaTaskList: "Task list",
-  ariaPriorityBadge: "Priority: {priority}"
-};
-var ko = {
-  // Common
-  cancel: "\uCDE8\uC18C",
-  confirm: "\uD655\uC778",
-  create: "\uC0DD\uC131",
-  save: "\uC800\uC7A5",
-  delete: "\uC0AD\uC81C",
-  close: "\uB2EB\uAE30",
-  loading: "\uB85C\uB529 \uC911...",
-  error: "\uC624\uB958",
-  success: "\uC131\uACF5",
-  retry: "\uC7AC\uC2DC\uB3C4",
-  // Task creation
-  quickTaskTitle: "\u{1F680} \uBE60\uB978 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
-  quickTaskDescription: "\uD0DC\uC2A4\uD06C\uB97C \uC790\uC5F0\uC2A4\uB7FD\uAC8C \uC124\uBA85\uD558\uC138\uC694. GPT\uAC00 \uBAA9\uD45C\uC640 \uD504\uB85C\uC81D\uD2B8\uC5D0 \uB9DE\uAC8C \uAD6C\uC870\uD654\uD569\uB2C8\uB2E4.",
-  quickTaskPlaceholder: "\uC608: Freedom Runway \uD504\uB85C\uC81D\uD2B8\uC758 \uB79C\uB529 \uD398\uC774\uC9C0\uB97C \uB192\uC740 \uC6B0\uC120\uC21C\uC704\uB85C \uB9CC\uB4E4\uAE30",
-  createWithAi: "\u2728 AI\uB85C \uC0DD\uC131",
-  simpleCreate: "\uC0DD\uC131 (AI \uC5C6\uC774)",
-  taskCreationCancelled: "\uD0DC\uC2A4\uD06C \uC0DD\uC131\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4",
-  taskCreated: "\u2705 \uD0DC\uC2A4\uD06C \uC0DD\uC131\uB428: {title}",
-  taskCreationFailed: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC2E4\uD328: {error}",
-  // Voice
-  voiceRecording: "\u{1F3A4} \uC74C\uC131 \uB179\uC74C",
-  voiceRecordingStart: "\uB179\uC74C \uC2DC\uC791",
-  voiceRecordingStop: "\uB179\uC74C \uC911\uC9C0",
-  voiceRecordingCancel: "\uCDE8\uC18C",
-  voiceTranscribing: "\u{1F3A4} \uBCC0\uD658 \uC911...",
-  voiceInstructions: "\uBA85\uD655\uD558\uAC8C \uB9D0\uD558\uACE0 \uD0DC\uC2A4\uD06C\uB97C \uC124\uBA85\uD558\uC138\uC694. \uC6B0\uC120\uC21C\uC704, \uC5D0\uD53D \uB610\uB294 \uD504\uB85C\uC81D\uD2B8 \uC774\uB984\uC744 \uD3EC\uD568\uD558\uC138\uC694.",
-  // Review modal
-  reviewTask: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAC80\uD1A0",
-  reviewTitle: "\uC81C\uBAA9",
-  reviewObjective: "\uBAA9\uD45C",
-  reviewImportance: "\uC911\uC694\uD55C \uC774\uC720",
-  reviewEpic: "\uC5D0\uD53D",
-  reviewPriority: "\uC6B0\uC120\uC21C\uC704",
-  reviewSubtasks: "\uC81C\uC548\uB41C \uD558\uC704 \uD0DC\uC2A4\uD06C ({count})",
-  noEpic: "-- \uC5D0\uD53D \uC5C6\uC74C --",
-  // Breakdown
-  breakdownTitle: "\u{1F4CA} \uD0DC\uC2A4\uD06C \uBD84\uD574: {epic}",
-  breakdownDescription: "{count}\uAC1C\uC758 \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
-  breakdownTaskCount: "{count}\uAC1C \uD0DC\uC2A4\uD06C",
-  breakdownDependsOn: "\uC758\uC874: \uD0DC\uC2A4\uD06C {index}",
-  breakdownCreating: "\u{1F916} \uBD84\uD574 \uC911: {epic}...",
-  // Confirmation
-  confirmTaskCreation: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778 ({count}\uAC1C)",
-  confirmTaskCreationSingle: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uC0DD\uC131 \uD655\uC778",
-  confirmTasksWillBeCreated: "\uB2E4\uC74C \uD0DC\uC2A4\uD06C\uAC00 \uC0DD\uC131\uB429\uB2C8\uB2E4:",
-  confirmTargetFolder: "\u{1F4C1} {folder}",
-  confirmCreateTasks: "\u2713 {count}\uAC1C \uD0DC\uC2A4\uD06C \uC0DD\uC131",
-  confirmCreateTask: "\u2713 \uD0DC\uC2A4\uD06C \uC0DD\uC131",
-  // Errors
-  errorNoApiKey: "\uBA3C\uC800 \uC124\uC815\uC5D0\uC11C OpenAI API \uD0A4\uB97C \uC124\uC815\uD558\uC138\uC694.",
-  errorVoiceDisabled: "\uC74C\uC131 \uC785\uB825\uC774 \uBE44\uD65C\uC131\uD654\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD65C\uC131\uD654\uD558\uC138\uC694.",
-  errorNoEpics: "\uBCFC\uD2B8\uC5D0\uC11C \uC5D0\uD53D\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",
-  errorNoSelection: "\uBA3C\uC800 \uD14D\uC2A4\uD2B8\uB97C \uC120\uD0DD\uD558\uC138\uC694.",
-  errorRateLimited: "\uC694\uCCAD \uC81C\uD55C\uB428. {seconds}\uCD08 \uD6C4\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
-  errorTimeout: "\uC694\uCCAD \uC2DC\uAC04 \uCD08\uACFC. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
-  errorServerError: "\uC11C\uBC84 \uC624\uB958. \uB098\uC911\uC5D0 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694.",
-  errorAuthFailed: "\uC778\uC99D \uC2E4\uD328. API \uD0A4\uB97C \uD655\uC778\uD558\uC138\uC694.",
-  errorParsingFailed: "GPT \uC751\uB2F5 \uD30C\uC2F1 \uC2E4\uD328. \uAC04\uB2E8\uD55C \uD0DC\uC2A4\uD06C\uB97C \uC0DD\uC131\uD569\uB2C8\uB2E4.",
-  // Progress
-  progressProcessing: "\u{1F916} GPT\uB85C \uCC98\uB9AC \uC911...",
-  progressBreakingDown: "\u{1F916} \uC5D0\uD53D \uBD84\uD574 \uC911...",
-  progressCreatingTasks: "\uD0DC\uC2A4\uD06C \uC0DD\uC131 \uC911...",
-  progressTranscribing: "\u{1F3A4} \uC624\uB514\uC624 \uBCC0\uD658 \uC911...",
-  // Settings
-  settingsApiConfig: "\u{1F511} API \uC124\uC815",
-  settingsVaultPaths: "\u{1F4C1} \uBCFC\uD2B8 \uACBD\uB85C",
-  settingsFeatures: "\u26A1 \uAE30\uB2A5",
-  settingsDefaults: "\u{1F4CB} \uD0DC\uC2A4\uD06C \uAE30\uBCF8\uAC12",
-  settingsPrompts: "\u{1F916} GPT \uD504\uB86C\uD504\uD2B8",
-  settingsReset: "\u{1F504} \uCD08\uAE30\uD654",
-  // Conflict resolution
-  conflictFileExists: "\uD30C\uC77C\uC774 \uC774\uBBF8 \uC874\uC7AC\uD569\uB2C8\uB2E4: {filename}",
-  conflictRename: "\uC774\uB984 \uBCC0\uACBD",
-  conflictOverwrite: "\uB36E\uC5B4\uC4F0\uAE30",
-  conflictSkip: "\uAC74\uB108\uB6F0\uAE30",
-  // Accessibility
-  ariaCloseModal: "\uBAA8\uB2EC \uB2EB\uAE30",
-  ariaConfirmButton: "\uC791\uC5C5 \uD655\uC778",
-  ariaCancelButton: "\uC791\uC5C5 \uCDE8\uC18C",
-  ariaLoadingIndicator: "\uB85C\uB529 \uC911\uC785\uB2C8\uB2E4. \uC7A0\uC2DC \uAE30\uB2E4\uB824\uC8FC\uC138\uC694",
-  ariaTaskList: "\uD0DC\uC2A4\uD06C \uBAA9\uB85D",
-  ariaPriorityBadge: "\uC6B0\uC120\uC21C\uC704: {priority}"
-};
-var ja = {
-  ...en,
-  // Fallback to English for incomplete translations
-  cancel: "\u30AD\u30E3\u30F3\u30BB\u30EB",
-  confirm: "\u78BA\u8A8D",
-  create: "\u4F5C\u6210",
-  save: "\u4FDD\u5B58",
-  delete: "\u524A\u9664",
-  close: "\u9589\u3058\u308B",
-  loading: "\u8AAD\u307F\u8FBC\u307F\u4E2D...",
-  error: "\u30A8\u30E9\u30FC",
-  success: "\u6210\u529F",
-  retry: "\u518D\u8A66\u884C",
-  quickTaskTitle: "\u{1F680} \u30AF\u30A4\u30C3\u30AF\u30BF\u30B9\u30AF\u4F5C\u6210",
-  createWithAi: "\u2728 AI\u3067\u4F5C\u6210",
-  taskCreationCancelled: "\u30BF\u30B9\u30AF\u4F5C\u6210\u304C\u30AD\u30E3\u30F3\u30BB\u30EB\u3055\u308C\u307E\u3057\u305F"
-};
-var zh = {
-  ...en,
-  // Fallback to English for incomplete translations
-  cancel: "\u53D6\u6D88",
-  confirm: "\u786E\u8BA4",
-  create: "\u521B\u5EFA",
-  save: "\u4FDD\u5B58",
-  delete: "\u5220\u9664",
-  close: "\u5173\u95ED",
-  loading: "\u52A0\u8F7D\u4E2D...",
-  error: "\u9519\u8BEF",
-  success: "\u6210\u529F",
-  retry: "\u91CD\u8BD5",
-  quickTaskTitle: "\u{1F680} \u5FEB\u901F\u521B\u5EFA\u4EFB\u52A1",
-  createWithAi: "\u2728 AI\u521B\u5EFA",
-  taskCreationCancelled: "\u4EFB\u52A1\u521B\u5EFA\u5DF2\u53D6\u6D88"
-};
-var translations = {
-  en,
-  ko,
-  ja,
-  zh
-};
-var currentLocale = "en";
-function setLocale(locale) {
-  if (translations[locale]) {
-    currentLocale = locale;
-  } else {
-    console.warn(`[GPT Task Manager] Unsupported locale: ${locale}, falling back to English`);
-    currentLocale = "en";
-  }
-}
-function t(key, params) {
-  const strings = translations[currentLocale] || translations.en;
-  let text = strings[key] || translations.en[key] || key;
-  if (params) {
-    for (const [paramKey, value] of Object.entries(params)) {
-      text = text.replace(new RegExp(`\\{${paramKey}\\}`, "g"), String(value));
-    }
-  }
-  return text;
-}
-
 // src/ui-components.ts
 var import_obsidian7 = require("obsidian");
+var EnhancedModal = class extends import_obsidian7.Modal {
+  constructor(app) {
+    super(app);
+    this.loadingState = {
+      isLoading: false,
+      message: "",
+      canCancel: false
+    };
+    this.cancellationToken = null;
+    this.loadingOverlay = null;
+  }
+  /**
+   * Show loading overlay with optional cancel button
+   */
+  showLoading(message, canCancel = true) {
+    this.loadingState = {
+      isLoading: true,
+      message,
+      canCancel
+    };
+    this.cancellationToken = new CancellationToken();
+    if (!this.loadingOverlay) {
+      this.loadingOverlay = this.contentEl.createDiv({ cls: "loading-overlay" });
+    }
+    this.loadingOverlay.empty();
+    this.loadingOverlay.style.display = "flex";
+    const spinner = this.loadingOverlay.createDiv({ cls: "loading-spinner" });
+    spinner.setAttribute("role", "status");
+    spinner.setAttribute("aria-label", t("ariaLoadingIndicator"));
+    const messageEl = this.loadingOverlay.createEl("p", {
+      text: message,
+      cls: "loading-message"
+    });
+    messageEl.setAttribute("aria-live", "polite");
+    if (canCancel) {
+      const cancelBtn = this.loadingOverlay.createEl("button", {
+        text: t("cancel"),
+        cls: "loading-cancel-btn"
+      });
+      cancelBtn.setAttribute("aria-label", t("ariaCancelButton"));
+      cancelBtn.onclick = () => {
+        this.cancelOperation();
+      };
+    }
+    return this.cancellationToken;
+  }
+  /**
+   * Hide loading overlay
+   */
+  hideLoading() {
+    this.loadingState.isLoading = false;
+    if (this.loadingOverlay) {
+      this.loadingOverlay.style.display = "none";
+    }
+  }
+  /**
+   * Update loading message
+   */
+  updateLoadingMessage(message) {
+    if (this.loadingOverlay) {
+      const messageEl = this.loadingOverlay.querySelector(".loading-message");
+      if (messageEl) {
+        messageEl.textContent = message;
+      }
+    }
+  }
+  /**
+   * Cancel the current operation
+   */
+  cancelOperation() {
+    if (this.cancellationToken) {
+      this.cancellationToken.cancel(t("taskCreationCancelled"));
+    }
+    this.hideLoading();
+  }
+  /**
+   * Add ARIA attributes to modal
+   */
+  setupAccessibility(title) {
+    this.modalEl.setAttribute("role", "dialog");
+    this.modalEl.setAttribute("aria-modal", "true");
+    this.modalEl.setAttribute("aria-labelledby", "modal-title");
+    const titleEl = this.contentEl.querySelector("h2");
+    if (titleEl) {
+      titleEl.id = "modal-title";
+    }
+  }
+  /**
+   * Create accessible button
+   */
+  createAccessibleButton(parent, text, ariaLabel, onClick, classes) {
+    const btn = parent.createEl("button", { text, cls: classes });
+    btn.setAttribute("aria-label", ariaLabel);
+    btn.onclick = onClick;
+    return btn;
+  }
+  onClose() {
+    if (this.cancellationToken && !this.cancellationToken.isCancelled) {
+      this.cancellationToken.cancel("Modal closed");
+    }
+    super.onClose();
+  }
+};
+var BatchConfirmationModal = class extends EnhancedModal {
+  constructor(app, items, epicName) {
+    super(app);
+    this.epicName = epicName;
+    this.onConfirm = null;
+    this.items = items.map((item) => ({
+      title: item.title,
+      selected: true,
+      deferred: false
+    }));
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("gpt-task-manager-batch-modal");
+    const titleText = `\u{1F4CB} ${t("confirmTaskCreation", { count: this.items.length })}`;
+    contentEl.createEl("h2", { text: titleText });
+    contentEl.createEl("p", {
+      text: "Select tasks to create now. Unselected tasks can be deferred for later.",
+      cls: "modal-description"
+    });
+    const listEl = contentEl.createDiv({ cls: "batch-task-list" });
+    listEl.setAttribute("role", "list");
+    listEl.setAttribute("aria-label", t("ariaTaskList"));
+    this.items.forEach((item, index) => {
+      const itemEl = listEl.createDiv({ cls: "batch-task-item" });
+      itemEl.setAttribute("role", "listitem");
+      const checkbox = itemEl.createEl("input", { type: "checkbox" });
+      checkbox.checked = item.selected;
+      checkbox.id = `task-${index}`;
+      checkbox.setAttribute("aria-label", `Select ${item.title}`);
+      checkbox.onchange = () => {
+        item.selected = checkbox.checked;
+        this.updateCounts();
+      };
+      const label = itemEl.createEl("label");
+      label.htmlFor = `task-${index}`;
+      label.textContent = item.title;
+      const deferContainer = itemEl.createDiv({ cls: "defer-container" });
+      const deferCheckbox = deferContainer.createEl("input", { type: "checkbox" });
+      deferCheckbox.id = `defer-${index}`;
+      deferCheckbox.checked = item.deferred;
+      deferCheckbox.setAttribute("aria-label", `Defer ${item.title}`);
+      deferCheckbox.onchange = () => {
+        item.deferred = deferCheckbox.checked;
+        if (item.deferred) {
+          item.selected = false;
+          checkbox.checked = false;
+        }
+        this.updateCounts();
+      };
+      deferContainer.createEl("label", { text: "Defer" }).htmlFor = `defer-${index}`;
+    });
+    const summaryEl = contentEl.createDiv({ cls: "batch-summary" });
+    summaryEl.id = "batch-summary";
+    const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
+    const selectAllBtn = this.createAccessibleButton(
+      buttonsEl,
+      "Select All",
+      "Select all tasks",
+      () => this.selectAll(true)
+    );
+    const selectNoneBtn = this.createAccessibleButton(
+      buttonsEl,
+      "Select None",
+      "Deselect all tasks",
+      () => this.selectAll(false)
+    );
+    this.createAccessibleButton(
+      buttonsEl,
+      t("cancel"),
+      t("ariaCancelButton"),
+      () => this.close()
+    );
+    this.createAccessibleButton(
+      buttonsEl,
+      t("confirmCreateTask"),
+      t("ariaConfirmButton"),
+      () => this.confirm(),
+      "mod-cta"
+    );
+    this.updateCounts();
+    this.setupAccessibility(titleText);
+  }
+  updateCounts() {
+    const selected = this.items.filter((item) => item.selected).length;
+    const deferred = this.items.filter((item) => item.deferred).length;
+    const summary = this.contentEl.querySelector("#batch-summary");
+    if (summary) {
+      summary.textContent = `${selected} to create now, ${deferred} deferred`;
+    }
+  }
+  selectAll(selected) {
+    this.items.forEach((item) => {
+      item.selected = selected;
+      item.deferred = !selected;
+    });
+    const checkboxes = this.contentEl.querySelectorAll('input[type="checkbox"]');
+    checkboxes.forEach((checkbox, index) => {
+      const el = checkbox;
+      if (el.id.startsWith("task-")) {
+        el.checked = selected;
+      } else if (el.id.startsWith("defer-")) {
+        el.checked = !selected;
+      }
+    });
+    this.updateCounts();
+  }
+  confirm() {
+    if (this.onConfirm) {
+      this.onConfirm(this.items);
+    }
+    this.close();
+  }
+  /**
+   * Show modal and wait for confirmation
+   */
+  async waitForConfirmation() {
+    return new Promise((resolve) => {
+      this.onConfirm = resolve;
+      this.open();
+    });
+  }
+  onClose() {
+    if (this.onConfirm) {
+      this.onConfirm(this.items.filter((item) => item.selected && !item.deferred));
+    }
+    super.onClose();
+  }
+};
 function showNotice(message, duration = 4e3) {
   new import_obsidian7.Notice(message, duration);
 }
@@ -2338,8 +2711,565 @@ function showSuccessNotice(message) {
   new import_obsidian7.Notice(`\u2705 ${message}`, 3e3);
 }
 
+// src/kanban-integration.ts
+var import_obsidian8 = require("obsidian");
+var KanbanIntegrationService = class {
+  constructor(app, settings) {
+    this.app = app;
+    this.settings = settings;
+  }
+  /**
+   * Update settings reference
+   */
+  updateSettings(settings) {
+    this.settings = settings;
+  }
+  /**
+   * Check if obsidian-base-kanban plugin is available
+   */
+  isKanbanPluginAvailable() {
+    var _a, _b;
+    const kanbanPlugin = (_b = (_a = this.app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["obsidian-base-kanban"];
+    return !!kanbanPlugin;
+  }
+  /**
+   * Parse frontmatter from a task file
+   */
+  parseTaskFrontmatter(content) {
+    const metadata = {};
+    const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!frontmatterMatch) {
+      return metadata;
+    }
+    const frontmatter = frontmatterMatch[1];
+    const lines = frontmatter.split("\n");
+    for (const line of lines) {
+      const kvMatch = line.match(/^(\w+):\s*(.+)$/);
+      if (kvMatch) {
+        const key = kvMatch[1];
+        let value = kvMatch[2].trim();
+        value = value.replace(/^["']|["']$/g, "");
+        value = value.replace(/^\[\[|\]\]$/g, "");
+        switch (key.toLowerCase()) {
+          case "type":
+            metadata.type = value;
+            break;
+          case "area":
+            metadata.area = value;
+            break;
+          case "goal":
+            metadata.goal = value;
+            break;
+          case "project":
+            metadata.project = value;
+            break;
+          case "epic":
+            metadata.epic = value;
+            break;
+          case "status":
+            metadata.status = value;
+            break;
+          case "priority":
+            metadata.priority = value;
+            break;
+          case "due":
+            metadata.due = value;
+            break;
+          case "created":
+            metadata.created = value;
+            break;
+          case "updated":
+            metadata.updated = value;
+            break;
+          case "parent":
+            metadata.parent = value;
+            break;
+          case "description":
+            metadata.description = value;
+            break;
+          case "tags":
+            if (value.startsWith("[")) {
+              metadata.tags = value.replace(/[\[\]]/g, "").split(",").map((t2) => t2.trim());
+            }
+            break;
+        }
+      }
+      if (line.trim().startsWith("- ") && metadata.tags === void 0) {
+        const tagValue = line.trim().replace(/^-\s*/, "");
+        if (!metadata.tags) {
+          metadata.tags = [];
+        }
+        metadata.tags.push(tagValue);
+      }
+    }
+    return metadata;
+  }
+  /**
+   * Extract sync checklist item from task content
+   */
+  extractSyncChecklistItem(content) {
+    const syncSectionMatch = content.match(/## 🔄 Sync\s*\n([\s\S]*?)(?=\n## |$)/);
+    if (!syncSectionMatch) {
+      return null;
+    }
+    const syncSection = syncSectionMatch[1];
+    const checkboxMatch = syncSection.match(/-\s*\[([ xX])\]\s*(.+)/);
+    if (!checkboxMatch) {
+      return null;
+    }
+    return {
+      completed: checkboxMatch[1].toLowerCase() === "x",
+      text: checkboxMatch[2].trim()
+    };
+  }
+  /**
+   * Parse a single task file
+   */
+  async parseTaskFile(file) {
+    try {
+      const content = await this.app.vault.read(file);
+      const metadata = this.parseTaskFrontmatter(content);
+      if (!metadata.type || !metadata.type.includes("Tasks")) {
+        return null;
+      }
+      const syncItem = this.extractSyncChecklistItem(content);
+      const title = (syncItem == null ? void 0 : syncItem.text) || file.basename;
+      return {
+        file,
+        title,
+        metadata,
+        syncChecklistItem: syncItem == null ? void 0 : syncItem.text,
+        completed: (syncItem == null ? void 0 : syncItem.completed) || false,
+        content
+      };
+    } catch (error) {
+      console.error(`Failed to parse task file: ${file.path}`, error);
+      return null;
+    }
+  }
+  /**
+   * Query all tasks from the tasks folder
+   */
+  async queryTasks(filter) {
+    const tasks = [];
+    const folder = this.app.vault.getAbstractFileByPath(this.settings.tasksFolder);
+    if (!(folder instanceof import_obsidian8.TFolder)) {
+      console.warn(`Tasks folder not found: ${this.settings.tasksFolder}`);
+      return tasks;
+    }
+    const getAllMarkdownFiles = (folder2) => {
+      const files2 = [];
+      for (const child of folder2.children) {
+        if (child instanceof import_obsidian8.TFile && child.extension === "md") {
+          files2.push(child);
+        } else if (child instanceof import_obsidian8.TFolder) {
+          files2.push(...getAllMarkdownFiles(child));
+        }
+      }
+      return files2;
+    };
+    const files = getAllMarkdownFiles(folder);
+    for (const file of files) {
+      const task = await this.parseTaskFile(file);
+      if (!task)
+        continue;
+      if (filter) {
+        if (filter.epic && task.metadata.epic !== filter.epic) {
+          continue;
+        }
+        if (filter.project && task.metadata.project !== filter.project) {
+          continue;
+        }
+        if (filter.status && filter.status.length > 0 && task.metadata.status) {
+          if (!filter.status.includes(task.metadata.status)) {
+            continue;
+          }
+        }
+        if (!filter.includeCompleted && task.completed) {
+          continue;
+        }
+      }
+      tasks.push(task);
+    }
+    return tasks;
+  }
+  /**
+   * Convert task status to lane title
+   */
+  statusToLane(status) {
+    if (!status)
+      return this.settings.kanbanStatusMapping.backlog;
+    const statusLower = status.toLowerCase();
+    if (statusLower === "backlog")
+      return this.settings.kanbanStatusMapping.backlog;
+    if (statusLower === "todo")
+      return this.settings.kanbanStatusMapping.todo;
+    if (statusLower === "in-progress" || statusLower === "inprogress") {
+      return this.settings.kanbanStatusMapping.inProgress;
+    }
+    if (statusLower === "done" || statusLower === "completed") {
+      return this.settings.kanbanStatusMapping.done;
+    }
+    return this.settings.kanbanStatusMapping.backlog;
+  }
+  /**
+   * Convert lane title to task status
+   */
+  laneToStatus(laneTitle) {
+    const laneLower = laneTitle.toLowerCase();
+    const mapping = this.settings.kanbanStatusMapping;
+    if (laneLower === mapping.backlog.toLowerCase() || laneLower.includes("backlog")) {
+      return "backlog";
+    }
+    if (laneLower === mapping.todo.toLowerCase() || laneLower.includes("todo")) {
+      return "todo";
+    }
+    if (laneLower === mapping.inProgress.toLowerCase() || laneLower.includes("progress")) {
+      return "in-progress";
+    }
+    if (laneLower === mapping.done.toLowerCase() || laneLower.includes("done")) {
+      return "done";
+    }
+    return "backlog";
+  }
+  /**
+   * Generate a unique ID
+   */
+  generateId() {
+    return Math.random().toString(36).substring(2, 11) + Date.now().toString(36).slice(-4);
+  }
+  /**
+   * Convert a GptTask to a KanbanCard
+   */
+  taskToCard(task) {
+    return {
+      id: this.generateId(),
+      title: task.title,
+      completed: task.completed,
+      tags: task.metadata.tags || [],
+      dueDate: task.metadata.due,
+      metadata: {
+        project: task.metadata.project,
+        priority: task.metadata.priority,
+        status: task.metadata.status
+      },
+      baseTaskPath: task.file.path,
+      baseSyncTime: Date.now()
+    };
+  }
+  /**
+   * Create a Kanban board from tasks
+   */
+  createBoardFromTasks(tasks, boardTitle) {
+    const mapping = this.settings.kanbanStatusMapping;
+    const lanes = [
+      { id: this.generateId(), title: mapping.backlog, cards: [] },
+      { id: this.generateId(), title: mapping.todo, cards: [] },
+      { id: this.generateId(), title: mapping.inProgress, cards: [] },
+      { id: this.generateId(), title: mapping.done, cards: [] }
+    ];
+    for (const task of tasks) {
+      const card = this.taskToCard(task);
+      const laneTitle = this.statusToLane(task.metadata.status);
+      const lane = lanes.find((l) => l.title === laneTitle);
+      if (lane) {
+        lane.cards.push(card);
+      } else {
+        lanes[0].cards.push(card);
+      }
+    }
+    const priorityOrder = {
+      critical: 0,
+      high: 1,
+      medium: 2,
+      low: 3
+    };
+    for (const lane of lanes) {
+      lane.cards.sort((a, b) => {
+        var _a, _b;
+        const aPriority = (_a = priorityOrder[a.metadata.priority || "medium"]) != null ? _a : 2;
+        const bPriority = (_b = priorityOrder[b.metadata.priority || "medium"]) != null ? _b : 2;
+        return aPriority - bPriority;
+      });
+    }
+    return {
+      lanes,
+      archive: [],
+      settings: {
+        "lane-width": "300px",
+        "show-checkboxes": true,
+        "show-progress": true,
+        "show-project": true,
+        "base-sync": {
+          enabled: true,
+          tasksFolder: this.settings.tasksFolder,
+          query: "",
+          statusField: "Status",
+          progressField: "progress",
+          projectField: "Project",
+          laneMapping: {
+            [mapping.backlog]: "backlog",
+            [mapping.todo]: "todo",
+            [mapping.inProgress]: "in-progress",
+            [mapping.done]: "done"
+          },
+          conflictResolution: "prompt",
+          syncInterval: 0,
+          createMissingTasks: false,
+          archiveCompletedTasks: false
+        },
+        "gpt-task-manager": {
+          enabled: true,
+          tasksFolder: this.settings.tasksFolder,
+          epicsFolder: this.settings.epicsFolder,
+          projectsFolder: this.settings.projectsFolder,
+          goalsFolder: this.settings.goalsFolder
+        }
+      },
+      _frontmatter: `---
+kanban-plugin: basic
+title: ${boardTitle || "Task Board"}
+gpt-task-manager: true
+---
+
+`
+    };
+  }
+  /**
+   * Serialize a Kanban board to markdown format
+   */
+  serializeBoard(board) {
+    const lines = [];
+    if (board._frontmatter) {
+      lines.push(board._frontmatter);
+    } else {
+      lines.push("---");
+      lines.push("kanban-plugin: basic");
+      lines.push("gpt-task-manager: true");
+      lines.push("---");
+      lines.push("");
+    }
+    for (const lane of board.lanes) {
+      lines.push(`## ${lane.title}`);
+      lines.push("");
+      for (const card of lane.cards) {
+        let cardLine = `- [${card.completed ? "x" : " "}] `;
+        if (card.baseTaskPath) {
+          cardLine += `[[${card.baseTaskPath}|${card.title}]]`;
+        } else {
+          cardLine += card.title;
+        }
+        if (card.dueDate) {
+          cardLine += ` @{${card.dueDate}}`;
+        }
+        for (const tag of card.tags) {
+          if (!cardLine.includes(`#${tag}`)) {
+            cardLine += ` #${tag}`;
+          }
+        }
+        if (card.metadata.priority) {
+          cardLine += ` [priority::${card.metadata.priority}]`;
+        }
+        if (card.metadata.project) {
+          cardLine += ` [project::${card.metadata.project}]`;
+        }
+        lines.push(cardLine);
+      }
+      lines.push("");
+    }
+    if (board.archive.length > 0) {
+      lines.push("## Archive");
+      lines.push("");
+      for (const card of board.archive) {
+        let cardLine = `- [x] ${card.title}`;
+        if (card.dueDate) {
+          cardLine += ` @{${card.dueDate}}`;
+        }
+        lines.push(cardLine);
+      }
+      lines.push("");
+    }
+    lines.push("%% kanban:settings");
+    lines.push("```");
+    lines.push(JSON.stringify(board.settings, null, 2));
+    lines.push("```");
+    lines.push("%%");
+    return lines.join("\n");
+  }
+  /**
+   * Ensure the Kanban boards folder exists
+   */
+  async ensureBoardsFolderExists() {
+    const folderPath = (0, import_obsidian8.normalizePath)(this.settings.kanbanBoardsFolder);
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder) {
+      await this.app.vault.createFolder(folderPath);
+    }
+  }
+  /**
+   * Create or update a Kanban board file
+   */
+  async createOrUpdateBoard(boardName, tasks, options) {
+    await this.ensureBoardsFolderExists();
+    const board = this.createBoardFromTasks(tasks, boardName);
+    const content = this.serializeBoard(board);
+    const sanitizedName = boardName.replace(/[\\/:*?"<>|]/g, "");
+    const filePath = (0, import_obsidian8.normalizePath)(`${this.settings.kanbanBoardsFolder}/${sanitizedName}.md`);
+    const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+    if (existingFile instanceof import_obsidian8.TFile) {
+      if ((options == null ? void 0 : options.overwrite) !== false) {
+        await this.app.vault.modify(existingFile, content);
+        return existingFile;
+      }
+      return existingFile;
+    }
+    return await this.app.vault.create(filePath, content);
+  }
+  /**
+   * Open a Kanban board in the workspace
+   */
+  async openBoard(file) {
+    const leaf = this.app.workspace.getLeaf(false);
+    if (this.isKanbanPluginAvailable()) {
+      await leaf.setViewState({
+        type: "kanban",
+        state: { file: file.path }
+      });
+    } else {
+      await leaf.openFile(file);
+    }
+  }
+  /**
+   * Create and open a Kanban board for all tasks
+   */
+  async openAllTasksBoard() {
+    const tasks = await this.queryTasks({ includeCompleted: false });
+    if (tasks.length === 0) {
+      new import_obsidian8.Notice("No active tasks found");
+      return;
+    }
+    const file = await this.createOrUpdateBoard(
+      this.settings.defaultKanbanBoardName,
+      tasks,
+      { overwrite: true }
+    );
+    await this.openBoard(file);
+    new import_obsidian8.Notice(`Opened Kanban board with ${tasks.length} tasks`);
+  }
+  /**
+   * Create and open a Kanban board for an Epic
+   */
+  async openEpicBoard(epicName) {
+    const tasks = await this.queryTasks({
+      epic: epicName,
+      includeCompleted: true
+    });
+    if (tasks.length === 0) {
+      new import_obsidian8.Notice(`No tasks found for Epic: ${epicName}`);
+      return;
+    }
+    const boardName = `${epicName} Board`;
+    const file = await this.createOrUpdateBoard(boardName, tasks, { overwrite: true });
+    await this.openBoard(file);
+    new import_obsidian8.Notice(`Opened Kanban board with ${tasks.length} tasks from Epic: ${epicName}`);
+  }
+  /**
+   * Create and open a Kanban board for a Project
+   */
+  async openProjectBoard(projectName) {
+    const tasks = await this.queryTasks({
+      project: projectName,
+      includeCompleted: true
+    });
+    if (tasks.length === 0) {
+      new import_obsidian8.Notice(`No tasks found for Project: ${projectName}`);
+      return;
+    }
+    const boardName = `${projectName} Board`;
+    const file = await this.createOrUpdateBoard(boardName, tasks, { overwrite: true });
+    await this.openBoard(file);
+    new import_obsidian8.Notice(`Opened Kanban board with ${tasks.length} tasks from Project: ${projectName}`);
+  }
+  /**
+   * Get available epics
+   */
+  async getEpics() {
+    const epics = [];
+    const folder = this.app.vault.getAbstractFileByPath(this.settings.epicsFolder);
+    if (!(folder instanceof import_obsidian8.TFolder)) {
+      return epics;
+    }
+    for (const child of folder.children) {
+      if (child instanceof import_obsidian8.TFile && child.extension === "md") {
+        epics.push(child.basename);
+      }
+    }
+    return epics.sort();
+  }
+  /**
+   * Get available projects
+   */
+  async getProjects() {
+    const projects = [];
+    const folder = this.app.vault.getAbstractFileByPath(this.settings.projectsFolder);
+    if (!(folder instanceof import_obsidian8.TFolder)) {
+      return projects;
+    }
+    const getAllProjects = (folder2) => {
+      const names = [];
+      for (const child of folder2.children) {
+        if (child instanceof import_obsidian8.TFolder) {
+          names.push(child.name);
+          names.push(...getAllProjects(child));
+        } else if (child instanceof import_obsidian8.TFile && child.extension === "md") {
+          names.push(child.basename);
+        }
+      }
+      return names;
+    };
+    return getAllProjects(folder).sort();
+  }
+  /**
+   * Update task status in the task file
+   */
+  async updateTaskStatus(taskPath, newStatus) {
+    try {
+      const file = this.app.vault.getAbstractFileByPath(taskPath);
+      if (!(file instanceof import_obsidian8.TFile)) {
+        console.warn(`Task file not found: ${taskPath}`);
+        return false;
+      }
+      let content = await this.app.vault.read(file);
+      const statusRegex = /^(Status:)\s*.+$/mi;
+      if (statusRegex.test(content)) {
+        content = content.replace(statusRegex, `$1 ${newStatus}`);
+      } else {
+        const frontmatterEndMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+        if (frontmatterEndMatch) {
+          const frontmatter = frontmatterEndMatch[1];
+          const newFrontmatter = frontmatter + `
+Status: ${newStatus}`;
+          content = content.replace(frontmatterEndMatch[1], newFrontmatter);
+        }
+      }
+      const updatedRegex = /^(Updated:)\s*.+$/mi;
+      const now = /* @__PURE__ */ new Date();
+      const timestamp = `"${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}"`;
+      if (updatedRegex.test(content)) {
+        content = content.replace(updatedRegex, `$1 ${timestamp}`);
+      }
+      await this.app.vault.modify(file, content);
+      return true;
+    } catch (error) {
+      console.error(`Failed to update task status: ${taskPath}`, error);
+      return false;
+    }
+  }
+};
+
 // main.ts
-var QuickTaskModal = class extends import_obsidian8.Modal {
+var MAX_BREAKDOWN_TASKS = 20;
+var QuickTaskModal = class extends import_obsidian9.Modal {
   constructor(app, onSubmit) {
     super(app);
     this.inputEl = null;
@@ -2349,9 +3279,9 @@ var QuickTaskModal = class extends import_obsidian8.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("gpt-task-manager-quick-modal");
-    contentEl.createEl("h2", { text: "\u{1F680} Quick Task Creation" });
+    contentEl.createEl("h2", { text: t("quickTaskTitle") });
     contentEl.createEl("p", {
-      text: "Describe your task naturally. GPT will help structure it based on your goals and projects.",
+      text: t("quickTaskDescription"),
       cls: "modal-description"
     });
     this.inputEl = contentEl.createEl("textarea", {
@@ -2370,9 +3300,9 @@ var QuickTaskModal = class extends import_obsidian8.Modal {
       }
     });
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = () => this.close();
-    const submitBtn = buttonsEl.createEl("button", { text: "\u2728 Create with AI", cls: "mod-cta" });
+    const submitBtn = buttonsEl.createEl("button", { text: t("createWithAi"), cls: "mod-cta" });
     submitBtn.onclick = () => this.submit();
     this.inputEl.focus();
   }
@@ -2383,7 +3313,7 @@ var QuickTaskModal = class extends import_obsidian8.Modal {
       this.close();
       this.onSubmit(input);
     } else {
-      new import_obsidian8.Notice("Please enter a task description");
+      new import_obsidian9.Notice(t("pleaseEnterDescription"));
     }
   }
   onClose() {
@@ -2391,7 +3321,7 @@ var QuickTaskModal = class extends import_obsidian8.Modal {
     contentEl.empty();
   }
 };
-var EpicSelectModal = class extends import_obsidian8.FuzzySuggestModal {
+var EpicSelectModal = class extends import_obsidian9.FuzzySuggestModal {
   constructor(app, epics, onChoose) {
     super(app);
     this.epics = epics;
@@ -2410,7 +3340,7 @@ var EpicSelectModal = class extends import_obsidian8.FuzzySuggestModal {
     this.onChoose(item);
   }
 };
-var TaskReviewModal = class extends import_obsidian8.Modal {
+var TaskReviewModal = class extends import_obsidian9.Modal {
   constructor(app, suggestion, epics, onConfirm, onCancel) {
     super(app);
     this.resolved = false;
@@ -2424,17 +3354,17 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("gpt-task-manager-review-modal");
-    contentEl.createEl("h2", { text: "\u{1F4CB} Review Task" });
+    contentEl.createEl("h2", { text: t("reviewTask") });
     const formEl = contentEl.createDiv({ cls: "task-review-form" });
     const titleGroup = formEl.createDiv({ cls: "form-group" });
-    titleGroup.createEl("label", { text: "Title" });
+    titleGroup.createEl("label", { text: t("reviewTitle") });
     const titleInput = titleGroup.createEl("input", { type: "text", value: this.suggestion.title });
     titleInput.style.width = "100%";
     titleInput.addEventListener("change", () => {
       this.suggestion.title = titleInput.value;
     });
     const objectiveGroup = formEl.createDiv({ cls: "form-group" });
-    objectiveGroup.createEl("label", { text: "Objective" });
+    objectiveGroup.createEl("label", { text: t("reviewObjective") });
     const objectiveInput = objectiveGroup.createEl("textarea", { text: this.suggestion.objective });
     objectiveInput.style.width = "100%";
     objectiveInput.rows = 3;
@@ -2442,7 +3372,7 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
       this.suggestion.objective = objectiveInput.value;
     });
     const importanceGroup = formEl.createDiv({ cls: "form-group" });
-    importanceGroup.createEl("label", { text: "Why it matters" });
+    importanceGroup.createEl("label", { text: t("reviewImportance") });
     const importanceInput = importanceGroup.createEl("textarea", { text: this.suggestion.importance });
     importanceInput.style.width = "100%";
     importanceInput.rows = 2;
@@ -2450,10 +3380,10 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
       this.suggestion.importance = importanceInput.value;
     });
     const epicGroup = formEl.createDiv({ cls: "form-group" });
-    epicGroup.createEl("label", { text: "Epic" });
+    epicGroup.createEl("label", { text: t("reviewEpic") });
     const epicSelect = epicGroup.createEl("select");
     epicSelect.style.width = "100%";
-    const noneOption = epicSelect.createEl("option", { text: "-- No Epic --", value: "" });
+    const noneOption = epicSelect.createEl("option", { text: t("noEpic"), value: "" });
     for (const epic of this.epics) {
       const option = epicSelect.createEl("option", {
         text: `${epic.name} (${epic.status || "active"})`,
@@ -2467,7 +3397,7 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
       this.selectedEpic = epicSelect.value || null;
     });
     const priorityGroup = formEl.createDiv({ cls: "form-group" });
-    priorityGroup.createEl("label", { text: "Priority" });
+    priorityGroup.createEl("label", { text: t("reviewPriority") });
     const prioritySelect = priorityGroup.createEl("select");
     prioritySelect.style.width = "100%";
     const priorities = [
@@ -2497,13 +3427,13 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
       }
     }
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = () => {
       this.resolved = true;
       this.close();
       this.onCancel();
     };
-    const confirmBtn = buttonsEl.createEl("button", { text: "\u2713 Create Task", cls: "mod-cta" });
+    const confirmBtn = buttonsEl.createEl("button", { text: t("createTask"), cls: "mod-cta" });
     confirmBtn.onclick = () => {
       this.resolved = true;
       this.close();
@@ -2519,7 +3449,7 @@ var TaskReviewModal = class extends import_obsidian8.Modal {
     }
   }
 };
-var BreakdownReviewModal = class extends import_obsidian8.Modal {
+var BreakdownReviewModal = class extends import_obsidian9.Modal {
   constructor(app, breakdown, epicName, onConfirm, onCancel) {
     super(app);
     this.resolved = false;
@@ -2558,14 +3488,14 @@ var BreakdownReviewModal = class extends import_obsidian8.Modal {
       }
     }
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = () => {
       this.resolved = true;
       this.close();
       this.onCancel();
     };
     const confirmBtn = buttonsEl.createEl("button", {
-      text: `\u2713 Create ${this.breakdown.tasks.length} Tasks`,
+      text: t("confirmCreateTasks", { count: this.breakdown.tasks.length }),
       cls: "mod-cta"
     });
     confirmBtn.onclick = () => {
@@ -2583,12 +3513,13 @@ var BreakdownReviewModal = class extends import_obsidian8.Modal {
     }
   }
 };
-var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
+var GptTaskManagerPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.contextCache = null;
     this.activeCancellationToken = null;
+    this.kanbanService = null;
   }
   async onload() {
     logger.info("Plugin", "Loading GPT Task Manager plugin...");
@@ -2601,6 +3532,12 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
     this.addRibbonIcon("mic", "Voice Task", () => {
       this.startVoiceTask();
     });
+    if (this.settings.enableKanbanIntegration) {
+      this.addRibbonIcon("layout-dashboard", "Open Kanban Board", () => {
+        this.openKanbanBoard();
+      });
+    }
+    this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
     this.addCommand({
       id: "gpt-task-quick-create",
       name: "Quick Task Creation (GPT Assisted)",
@@ -2627,6 +3564,26 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
       editorCallback: (editor, view) => {
         this.createTaskFromSelection(editor);
       }
+    });
+    this.addCommand({
+      id: "gpt-kanban-open-all-tasks",
+      name: "Kanban: Open All Tasks Board",
+      callback: () => this.openKanbanBoard()
+    });
+    this.addCommand({
+      id: "gpt-kanban-open-epic-board",
+      name: "Kanban: Open Board for Epic",
+      callback: () => this.showEpicKanbanModal()
+    });
+    this.addCommand({
+      id: "gpt-kanban-open-project-board",
+      name: "Kanban: Open Board for Project",
+      callback: () => this.showProjectKanbanModal()
+    });
+    this.addCommand({
+      id: "gpt-kanban-refresh-board",
+      name: "Kanban: Refresh Current Board",
+      callback: () => this.refreshCurrentKanbanBoard()
     });
     logger.info("Plugin", "GPT Task Manager loaded successfully");
   }
@@ -2675,11 +3632,15 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
       this.contextCache.destroy();
       this.contextCache = null;
     }
+    if (this.kanbanService) {
+      this.kanbanService.updateSettings(this.settings);
+    }
     logger.debug("Plugin", "Infrastructure initialized", {
       logLevel: this.settings.logLevel,
       locale: this.settings.uiLocale,
       cacheEnabled: this.settings.enableContextCache,
-      rateLimitPerMinute: this.settings.rateLimitPerMinute
+      rateLimitPerMinute: this.settings.rateLimitPerMinute,
+      kanbanEnabled: this.settings.enableKanbanIntegration
     });
   }
   /**
@@ -2694,27 +3655,24 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
   }
   /**
    * Get user context (cached if enabled)
+   * 
+   * Uses atomic loading to ensure a consistent snapshot across goals, projects,
+   * epics, and tasks. This avoids issues where the vault changes between
+   * individual load calls.
    */
   getUserContext() {
+    const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
     if (this.contextCache && this.settings.enableContextCache) {
-      const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
-      const goals = this.contextCache.getGoals(
+      return this.contextCache.getUserContext(
         cacheKey,
-        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).goals
+        () => loadUserContext(
+          this.app,
+          this.settings.goalsFolder,
+          this.settings.projectsFolder,
+          this.settings.epicsFolder,
+          this.settings.tasksFolder
+        )
       );
-      const projects = this.contextCache.getProjects(
-        cacheKey,
-        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).projects
-      );
-      const epics = this.contextCache.getEpics(
-        cacheKey,
-        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).epics
-      );
-      const activeTasks = this.contextCache.getTasks(
-        cacheKey,
-        () => loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).activeTasks
-      );
-      return { goals, projects, epics, activeTasks };
     }
     return loadUserContext(
       this.app,
@@ -2805,7 +3763,7 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
         epicName
       );
       if (!confirmed) {
-        new import_obsidian8.Notice("Task creation cancelled");
+        new import_obsidian9.Notice("Task creation cancelled");
         return;
       }
       let epicMetadata = null;
@@ -2820,11 +3778,11 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
         epicName,
         this.settings
       );
-      new import_obsidian8.Notice(`\u2705 Created task: ${suggestion.title}`);
+      new import_obsidian9.Notice(`\u2705 Created task: ${suggestion.title}`);
       await this.app.workspace.openLinkText(file.path, "", false);
     } catch (error) {
       console.error("[GPT Task Manager] Task creation error:", error);
-      new import_obsidian8.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
+      new import_obsidian9.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
   /**
@@ -2872,7 +3830,14 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
       if (this.settings.enableSmartSuggestions) {
         await this.processQuickTask(transcription);
       } else {
-        await this.createSimpleTask(voiceInput.taskTitle || transcription);
+        await this.createSimpleTask(
+          voiceInput.taskTitle || transcription,
+          {
+            epic: voiceInput.epic || void 0,
+            project: voiceInput.project || void 0,
+            priority: voiceInput.priority || void 0
+          }
+        );
       }
     } catch (error) {
       logger.error("Plugin", "Voice task error", { error: error instanceof Error ? error.message : "Unknown" });
@@ -2904,13 +3869,14 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
    * Break down an epic into tasks using GPT
    */
   async breakdownEpic(epic) {
+    var _a;
     showNotice(t("breakdownCreating", { epic: epic.name }));
     const cancellationToken = this.createCancellationToken();
     try {
       const epicPath = epic.path;
       const epicFile = this.app.vault.getAbstractFileByPath(epicPath);
       let epicContent = "";
-      if (epicFile instanceof import_obsidian8.TFile) {
+      if (epicFile instanceof import_obsidian9.TFile) {
         epicContent = await this.app.vault.read(epicFile);
       }
       const objectiveMatch = epicContent.match(/## 🎯 Objective[\s\S]*?> What this epic aims to achieve:\s*\n-\s*(.+)/);
@@ -2942,9 +3908,49 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
         showErrorNotice(result.errorMessage || "Unknown error");
         return;
       }
-      const breakdown = parseTaskBreakdown(result.content);
+      let breakdown = parseTaskBreakdown(result.content);
       if (!breakdown || breakdown.tasks.length === 0) {
-        showErrorNotice("Failed to parse task breakdown from GPT response.");
+        showErrorNotice(t("errorBreakdownEmpty"));
+        return;
+      }
+      if (breakdown.tasks.length > MAX_BREAKDOWN_TASKS) {
+        showNotice(t("errorBreakdownTooLarge", {
+          count: breakdown.tasks.length,
+          max: MAX_BREAKDOWN_TASKS
+        }));
+        breakdown = {
+          tasks: breakdown.tasks.slice(0, MAX_BREAKDOWN_TASKS)
+        };
+      }
+      if (breakdown.tasks.length > 8) {
+        const batchModal = new BatchConfirmationModal(
+          this.app,
+          breakdown.tasks.map((task) => ({ title: task.title })),
+          epic.name
+        );
+        const selectedItems = await batchModal.waitForConfirmation();
+        if (selectedItems.length === 0) {
+          showNotice(t("taskCreationCancelled"));
+          return;
+        }
+        const selectedTitles = new Set(selectedItems.map((item) => item.title));
+        breakdown = {
+          tasks: breakdown.tasks.filter((task) => selectedTitles.has(task.title))
+        };
+        const oldIndexToNewIndex = /* @__PURE__ */ new Map();
+        let newIndex = 0;
+        for (let oldIndex = 0; oldIndex < result.content.length; oldIndex++) {
+          const task = (_a = parseTaskBreakdown(result.content)) == null ? void 0 : _a.tasks[oldIndex];
+          if (task && selectedTitles.has(task.title)) {
+            oldIndexToNewIndex.set(oldIndex, newIndex);
+            newIndex++;
+          }
+        }
+        breakdown.tasks = breakdown.tasks.map((task) => ({
+          ...task,
+          dependsOn: task.dependsOn !== null && oldIndexToNewIndex.has(task.dependsOn) ? oldIndexToNewIndex.get(task.dependsOn) : null
+        }));
+        await this.createBreakdownTasks(breakdown, epic);
         return;
       }
       new BreakdownReviewModal(
@@ -3012,32 +4018,51 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
   }
   /**
    * Create a simple task without GPT (with confirmation)
+   * 
+   * @param title - The task title
+   * @param options - Optional metadata extracted from voice input or other sources
+   *                  (epic, project, priority)
    */
-  async createSimpleTask(title) {
+  async createSimpleTask(title, options) {
     try {
+      const epicName = (options == null ? void 0 : options.epic) || null;
+      const priority = (options == null ? void 0 : options.priority) || this.settings.defaultPriority;
+      let targetFolder = this.settings.tasksFolder;
+      if (epicName) {
+        const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+        targetFolder = `${this.settings.tasksFolder}/active epic folder/${sanitizedEpicName}`;
+      }
       const summary = {
         title,
-        targetFolder: this.settings.tasksFolder,
-        epic: null,
-        priority: this.settings.defaultPriority,
+        targetFolder,
+        epic: epicName,
+        priority,
         dependsOnTask: null
       };
       const confirmed = await showTaskConfirmation(
         this.app,
         [summary],
         "single",
-        null
+        epicName
       );
       if (!confirmed) {
-        new import_obsidian8.Notice("Task creation cancelled");
+        new import_obsidian9.Notice("Task creation cancelled");
         return;
+      }
+      let epicMetadata = null;
+      if (epicName) {
+        epicMetadata = await getEpicMetadata(this.app, epicName, this.settings.epicsFolder);
       }
       const params = {
         title,
         objective: "",
         importance: "",
+        area: (epicMetadata == null ? void 0 : epicMetadata.area) || "",
+        goal: (epicMetadata == null ? void 0 : epicMetadata.goal) || "",
+        project: (options == null ? void 0 : options.project) || (epicMetadata == null ? void 0 : epicMetadata.project) || "",
+        epic: epicName || "",
         status: this.settings.defaultStatus,
-        priority: this.settings.defaultPriority,
+        priority,
         tags: ["tasks"]
       };
       const content = generateTaskContent(params, this.settings);
@@ -3045,14 +4070,14 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
         this.app,
         content,
         title,
-        null,
+        epicName,
         this.settings
       );
-      new import_obsidian8.Notice(`\u2705 Created task: ${title}`);
+      new import_obsidian9.Notice(`\u2705 Created task: ${title}`);
       await this.app.workspace.openLinkText(file.path, "", false);
     } catch (error) {
       console.error("[GPT Task Manager] Simple task error:", error);
-      new import_obsidian8.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
+      new import_obsidian9.Notice(`Failed to create task: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
   /**
@@ -3061,7 +4086,7 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
   async createTaskFromSelection(editor) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian8.Notice("Please select some text first");
+      new import_obsidian9.Notice(t("pleaseSelectText"));
       return;
     }
     if (this.settings.enableSmartSuggestions && this.settings.openAIApiKey) {
@@ -3069,5 +4094,148 @@ var GptTaskManagerPlugin = class extends import_obsidian8.Plugin {
     } else {
       await this.createSimpleTask(selection);
     }
+  }
+  // ========== Kanban Integration Methods ==========
+  /**
+   * Open the default Kanban board with all tasks
+   */
+  async openKanbanBoard() {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+    try {
+      showNotice(t("kanbanLoading"));
+      await this.kanbanService.openAllTasksBoard();
+    } catch (error) {
+      logger.error("Plugin", "Failed to open Kanban board", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to open Kanban board");
+    }
+  }
+  /**
+   * Show modal to select an Epic and open its Kanban board
+   */
+  async showEpicKanbanModal() {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+    try {
+      const epics = await this.kanbanService.getEpics();
+      if (epics.length === 0) {
+        showErrorNotice(t("errorNoEpics"));
+        return;
+      }
+      new EpicKanbanSelectModal(this.app, epics, async (epicName) => {
+        showNotice(t("kanbanLoadingEpic", { epic: epicName }));
+        await this.kanbanService.openEpicBoard(epicName);
+      }).open();
+    } catch (error) {
+      logger.error("Plugin", "Failed to show epic Kanban modal", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to load epics");
+    }
+  }
+  /**
+   * Show modal to select a Project and open its Kanban board
+   */
+  async showProjectKanbanModal() {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+    try {
+      const projects = await this.kanbanService.getProjects();
+      if (projects.length === 0) {
+        showErrorNotice(t("kanbanNoProjects"));
+        return;
+      }
+      new ProjectKanbanSelectModal(this.app, projects, async (projectName) => {
+        showNotice(t("kanbanLoadingProject", { project: projectName }));
+        await this.kanbanService.openProjectBoard(projectName);
+      }).open();
+    } catch (error) {
+      logger.error("Plugin", "Failed to show project Kanban modal", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to load projects");
+    }
+  }
+  /**
+   * Refresh the currently open Kanban board
+   */
+  async refreshCurrentKanbanBoard() {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      showNotice(t("kanbanNoActiveBoard"));
+      return;
+    }
+    const content = await this.app.vault.read(activeFile);
+    if (!content.includes("kanban-plugin:") && !content.includes("gpt-task-manager: true")) {
+      showNotice(t("kanbanNotABoard"));
+      return;
+    }
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+    try {
+      const boardName = activeFile.basename.replace(" Board", "");
+      const tasks = await this.kanbanService.queryTasks({ includeCompleted: true });
+      await this.kanbanService.createOrUpdateBoard(activeFile.basename, tasks, { overwrite: true });
+      showSuccessNotice(t("kanbanRefreshed"));
+    } catch (error) {
+      logger.error("Plugin", "Failed to refresh Kanban board", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to refresh board");
+    }
+  }
+  /**
+   * Public method for external plugins to get the Kanban service
+   */
+  getKanbanService() {
+    return this.kanbanService;
+  }
+};
+var EpicKanbanSelectModal = class extends import_obsidian9.FuzzySuggestModal {
+  constructor(app, epics, onChoose) {
+    super(app);
+    this.epics = epics;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select an Epic to view in Kanban...");
+  }
+  getItems() {
+    return this.epics;
+  }
+  getItemText(item) {
+    return item;
+  }
+  onChooseItem(item, evt) {
+    this.onChoose(item);
+  }
+};
+var ProjectKanbanSelectModal = class extends import_obsidian9.FuzzySuggestModal {
+  constructor(app, projects, onChoose) {
+    super(app);
+    this.projects = projects;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select a Project to view in Kanban...");
+  }
+  getItems() {
+    return this.projects;
+  }
+  getItemText(item) {
+    return item;
+  }
+  onChooseItem(item, evt) {
+    this.onChoose(item);
   }
 };

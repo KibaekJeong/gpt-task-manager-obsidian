@@ -4,6 +4,13 @@
 
 import { App, TFile, TFolder, Events } from "obsidian";
 import { logger } from "./logger";
+import type {
+  GoalContext,
+  ProjectContext,
+  EpicContext,
+  TaskContext,
+  UserContext,
+} from "./context-loader";
 
 const CATEGORY = "Cache";
 
@@ -155,14 +162,22 @@ class Cache<T> {
 
 /**
  * Vault context cache manager
+ * 
+ * Provides strongly-typed caching for vault context (goals, projects, epics, tasks)
+ * with automatic invalidation on vault changes.
  */
 export class ContextCache {
   private app: App;
-  private goalsCache: Cache<unknown[]>;
-  private projectsCache: Cache<unknown[]>;
-  private epicsCache: Cache<unknown[]>;
-  private tasksCache: Cache<unknown[]>;
+  private goalsCache: Cache<GoalContext[]>;
+  private projectsCache: Cache<ProjectContext[]>;
+  private epicsCache: Cache<EpicContext[]>;
+  private tasksCache: Cache<TaskContext[]>;
   private metadataCache: Cache<unknown>;
+  /**
+   * Cache for full UserContext snapshots loaded atomically.
+   * Using this avoids inconsistent reads when vault changes between individual loads.
+   */
+  private userContextCache: Cache<UserContext>;
   
   private invalidationTimeout: ReturnType<typeof setTimeout> | null = null;
   private debounceMs: number;
@@ -177,6 +192,7 @@ export class ContextCache {
     this.epicsCache = new Cache(config);
     this.tasksCache = new Cache(config);
     this.metadataCache = new Cache(config);
+    this.userContextCache = new Cache(config);
 
     this.setupEventListeners();
   }
@@ -236,9 +252,25 @@ export class ContextCache {
   }
 
   /**
-   * Get cached goals or load them
+   * Get cached full UserContext or load it atomically.
+   * This is the preferred method – it loads all context arrays in one call
+   * ensuring a consistent snapshot and avoiding redundant vault scans.
    */
-  getGoals(key: string, loader: () => unknown[]): unknown[] {
+  getUserContext(key: string, loader: () => UserContext): UserContext {
+    const cached = this.userContextCache.get(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const data = loader();
+    this.userContextCache.set(key, data);
+    return data;
+  }
+
+  /**
+   * Get cached goals or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
+   */
+  getGoals(key: string, loader: () => GoalContext[]): GoalContext[] {
     const cached = this.goalsCache.get(key);
     if (cached !== null) {
       return cached;
@@ -250,8 +282,9 @@ export class ContextCache {
 
   /**
    * Get cached projects or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
-  getProjects(key: string, loader: () => unknown[]): unknown[] {
+  getProjects(key: string, loader: () => ProjectContext[]): ProjectContext[] {
     const cached = this.projectsCache.get(key);
     if (cached !== null) {
       return cached;
@@ -263,8 +296,9 @@ export class ContextCache {
 
   /**
    * Get cached epics or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
-  getEpics(key: string, loader: () => unknown[]): unknown[] {
+  getEpics(key: string, loader: () => EpicContext[]): EpicContext[] {
     const cached = this.epicsCache.get(key);
     if (cached !== null) {
       return cached;
@@ -276,8 +310,9 @@ export class ContextCache {
 
   /**
    * Get cached tasks or load them
+   * @deprecated Prefer getUserContext() for consistent snapshots
    */
-  getTasks(key: string, loader: () => unknown[]): unknown[] {
+  getTasks(key: string, loader: () => TaskContext[]): TaskContext[] {
     const cached = this.tasksCache.get(key);
     if (cached !== null) {
       return cached;
@@ -309,6 +344,7 @@ export class ContextCache {
     this.epicsCache.invalidateAll();
     this.tasksCache.invalidateAll();
     this.metadataCache.invalidateAll();
+    this.userContextCache.invalidateAll();
     logger.info(CATEGORY, "All caches invalidated");
   }
 
@@ -321,6 +357,7 @@ export class ContextCache {
     this.epicsCache.clear();
     this.tasksCache.clear();
     this.metadataCache.clear();
+    this.userContextCache.clear();
     logger.info(CATEGORY, "All caches cleared");
   }
 
@@ -334,6 +371,7 @@ export class ContextCache {
       epics: this.epicsCache.getStats(),
       tasks: this.tasksCache.getStats(),
       metadata: this.metadataCache.getStats(),
+      userContext: this.userContextCache.getStats(),
     };
   }
 

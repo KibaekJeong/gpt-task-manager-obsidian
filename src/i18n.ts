@@ -30,6 +30,8 @@ export interface TranslationStrings {
   taskCreationCancelled: string;
   taskCreated: string;
   taskCreationFailed: string;
+  pleaseEnterDescription: string;
+  pleaseSelectText: string;
 
   // Voice
   voiceRecording: string;
@@ -48,6 +50,7 @@ export interface TranslationStrings {
   reviewPriority: string;
   reviewSubtasks: string;
   noEpic: string;
+  createTask: string;
 
   // Breakdown
   breakdownTitle: string;
@@ -74,6 +77,8 @@ export interface TranslationStrings {
   errorServerError: string;
   errorAuthFailed: string;
   errorParsingFailed: string;
+  errorBreakdownTooLarge: string;
+  errorBreakdownEmpty: string;
 
   // Progress
   progressProcessing: string;
@@ -102,6 +107,19 @@ export interface TranslationStrings {
   ariaLoadingIndicator: string;
   ariaTaskList: string;
   ariaPriorityBadge: string;
+
+  // Kanban Integration
+  kanbanNotEnabled: string;
+  kanbanLoading: string;
+  kanbanLoadingEpic: string;
+  kanbanLoadingProject: string;
+  kanbanNoProjects: string;
+  kanbanNoActiveBoard: string;
+  kanbanNotABoard: string;
+  kanbanRefreshed: string;
+  kanbanOpenAllTasks: string;
+  kanbanOpenEpicBoard: string;
+  kanbanOpenProjectBoard: string;
 }
 
 /**
@@ -129,6 +147,8 @@ const en: TranslationStrings = {
   taskCreationCancelled: "Task creation cancelled",
   taskCreated: "✅ Created task: {title}",
   taskCreationFailed: "Failed to create task: {error}",
+  pleaseEnterDescription: "Please enter a task description",
+  pleaseSelectText: "Please select some text first",
 
   // Voice
   voiceRecording: "🎤 Voice Recording",
@@ -147,6 +167,7 @@ const en: TranslationStrings = {
   reviewPriority: "Priority",
   reviewSubtasks: "Suggested Subtasks ({count})",
   noEpic: "-- No Epic --",
+  createTask: "✓ Create Task",
 
   // Breakdown
   breakdownTitle: "📊 Task Breakdown: {epic}",
@@ -173,6 +194,8 @@ const en: TranslationStrings = {
   errorServerError: "Server error. Please try again later.",
   errorAuthFailed: "Authentication failed. Please check your API key.",
   errorParsingFailed: "Failed to parse GPT response. Creating simple task.",
+  errorBreakdownTooLarge: "GPT returned {count} tasks (max {max}). Truncated to first {max}.",
+  errorBreakdownEmpty: "GPT returned no tasks. Please try again or adjust your epic description.",
 
   // Progress
   progressProcessing: "🤖 Processing with GPT...",
@@ -201,6 +224,19 @@ const en: TranslationStrings = {
   ariaLoadingIndicator: "Loading, please wait",
   ariaTaskList: "Task list",
   ariaPriorityBadge: "Priority: {priority}",
+
+  // Kanban Integration
+  kanbanNotEnabled: "Kanban integration is not enabled. Enable it in settings.",
+  kanbanLoading: "📋 Loading Kanban board...",
+  kanbanLoadingEpic: "📋 Loading Kanban board for Epic: {epic}...",
+  kanbanLoadingProject: "📋 Loading Kanban board for Project: {project}...",
+  kanbanNoProjects: "No projects found in your vault.",
+  kanbanNoActiveBoard: "No Kanban board is currently open.",
+  kanbanNotABoard: "The current file is not a Kanban board.",
+  kanbanRefreshed: "✅ Kanban board refreshed",
+  kanbanOpenAllTasks: "Open All Tasks Board",
+  kanbanOpenEpicBoard: "Open Board for Epic",
+  kanbanOpenProjectBoard: "Open Board for Project",
 };
 
 /**
@@ -228,6 +264,8 @@ const ko: TranslationStrings = {
   taskCreationCancelled: "태스크 생성이 취소되었습니다",
   taskCreated: "✅ 태스크 생성됨: {title}",
   taskCreationFailed: "태스크 생성 실패: {error}",
+  pleaseEnterDescription: "태스크 설명을 입력하세요",
+  pleaseSelectText: "먼저 텍스트를 선택하세요",
 
   // Voice
   voiceRecording: "🎤 음성 녹음",
@@ -246,6 +284,7 @@ const ko: TranslationStrings = {
   reviewPriority: "우선순위",
   reviewSubtasks: "제안된 하위 태스크 ({count})",
   noEpic: "-- 에픽 없음 --",
+  createTask: "✓ 태스크 생성",
 
   // Breakdown
   breakdownTitle: "📊 태스크 분해: {epic}",
@@ -272,6 +311,8 @@ const ko: TranslationStrings = {
   errorServerError: "서버 오류. 나중에 다시 시도하세요.",
   errorAuthFailed: "인증 실패. API 키를 확인하세요.",
   errorParsingFailed: "GPT 응답 파싱 실패. 간단한 태스크를 생성합니다.",
+  errorBreakdownTooLarge: "GPT가 {count}개 태스크를 반환했습니다 (최대 {max}). 처음 {max}개만 사용합니다.",
+  errorBreakdownEmpty: "GPT가 태스크를 반환하지 않았습니다. 다시 시도하거나 에픽 설명을 수정하세요.",
 
   // Progress
   progressProcessing: "🤖 GPT로 처리 중...",
@@ -300,6 +341,19 @@ const ko: TranslationStrings = {
   ariaLoadingIndicator: "로딩 중입니다. 잠시 기다려주세요",
   ariaTaskList: "태스크 목록",
   ariaPriorityBadge: "우선순위: {priority}",
+
+  // Kanban Integration
+  kanbanNotEnabled: "칸반 통합이 활성화되지 않았습니다. 설정에서 활성화하세요.",
+  kanbanLoading: "📋 칸반 보드 로딩 중...",
+  kanbanLoadingEpic: "📋 에픽 칸반 보드 로딩 중: {epic}...",
+  kanbanLoadingProject: "📋 프로젝트 칸반 보드 로딩 중: {project}...",
+  kanbanNoProjects: "볼트에서 프로젝트를 찾을 수 없습니다.",
+  kanbanNoActiveBoard: "현재 열려 있는 칸반 보드가 없습니다.",
+  kanbanNotABoard: "현재 파일은 칸반 보드가 아닙니다.",
+  kanbanRefreshed: "✅ 칸반 보드가 새로고침되었습니다",
+  kanbanOpenAllTasks: "전체 태스크 보드 열기",
+  kanbanOpenEpicBoard: "에픽 보드 열기",
+  kanbanOpenProjectBoard: "프로젝트 보드 열기",
 };
 
 /**
@@ -320,6 +374,10 @@ const ja: TranslationStrings = {
   quickTaskTitle: "🚀 クイックタスク作成",
   createWithAi: "✨ AIで作成",
   taskCreationCancelled: "タスク作成がキャンセルされました",
+  // Kanban
+  kanbanNotEnabled: "カンバン統合が有効になっていません。設定で有効にしてください。",
+  kanbanLoading: "📋 カンバンボードを読み込み中...",
+  kanbanRefreshed: "✅ カンバンボードを更新しました",
 };
 
 /**
@@ -340,6 +398,10 @@ const zh: TranslationStrings = {
   quickTaskTitle: "🚀 快速创建任务",
   createWithAi: "✨ AI创建",
   taskCreationCancelled: "任务创建已取消",
+  // Kanban
+  kanbanNotEnabled: "看板集成未启用。请在设置中启用。",
+  kanbanLoading: "📋 正在加载看板...",
+  kanbanRefreshed: "✅ 看板已刷新",
 };
 
 /**

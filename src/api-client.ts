@@ -33,7 +33,18 @@ export interface ApiResponse<T = unknown> {
 }
 
 /**
- * Cancellation token for aborting requests
+ * Cancellation token for aborting requests.
+ * 
+ * **Important limitation**: For `requestUrl` calls (Obsidian's HTTP wrapper),
+ * the cancellation token can only stop *retries* and *waiting between retries*.
+ * It cannot abort an HTTP request that is already in-flight because `requestUrl`
+ * does not support `AbortController`. Once a request is sent, it will complete
+ * or time out regardless of cancellation.
+ * 
+ * For `fetch`-based calls (e.g., Whisper API), cancellation is wired into an
+ * `AbortController` and can truly abort in-flight requests.
+ * 
+ * Users should be aware that cancellation is "best-effort" for GPT calls.
  */
 export class CancellationToken {
   private _isCancelled: boolean = false;
@@ -198,7 +209,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Make an API request with timeout, retry, and cancellation support
+ * Make an API request with timeout, retry, and cancellation support.
+ * 
+ * Retry behavior:
+ * - Retries on HTTP 429 (rate limited) and 5xx (server errors)
+ * - Uses exponential backoff with jitter: baseDelay * 2^retryCount + random(0-1000ms)
+ * - Maximum backoff capped at 30 seconds
+ * - Cancellation is checked before each retry and during backoff waits
+ * 
+ * Error classification:
+ * - 401: Authentication failed (check API key)
+ * - 403: Access denied (permissions issue)
+ * - 429: Rate limited (wait and retry)
+ * - 5xx: Server errors (retry with backoff)
+ * - Other: Non-retryable, returns immediately
+ * 
+ * Note: Cancellation only stops retries; it cannot abort `requestUrl` mid-flight.
  */
 export async function makeApiRequest<T = unknown>(
   config: ApiRequestConfig,

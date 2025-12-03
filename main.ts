@@ -62,7 +62,14 @@ import { CancellationToken, setRateLimitConfig } from "./src/api-client";
 import { logger, LogLevel } from "./src/logger";
 import { ContextCache } from "./src/cache";
 import { setLocale, t, SupportedLocale } from "./src/i18n";
-import { showNotice, showErrorNotice, showSuccessNotice } from "./src/ui-components";
+import { showNotice, showErrorNotice, showSuccessNotice, BatchConfirmationModal, BatchItem } from "./src/ui-components";
+import { KanbanIntegrationService } from "./src/kanban-integration";
+
+/**
+ * Maximum number of tasks allowed in a single epic breakdown.
+ * If GPT returns more, we truncate and warn the user.
+ */
+const MAX_BREAKDOWN_TASKS = 20;
 
 /**
  * Modal for quick task input
@@ -81,9 +88,9 @@ class QuickTaskModal extends Modal {
     contentEl.empty();
     contentEl.addClass("gpt-task-manager-quick-modal");
 
-    contentEl.createEl("h2", { text: "🚀 Quick Task Creation" });
+    contentEl.createEl("h2", { text: t("quickTaskTitle") });
     contentEl.createEl("p", { 
-      text: "Describe your task naturally. GPT will help structure it based on your goals and projects.",
+      text: t("quickTaskDescription"),
       cls: "modal-description"
     });
 
@@ -107,10 +114,10 @@ class QuickTaskModal extends Modal {
 
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
 
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = (): void => this.close();
 
-    const submitBtn = buttonsEl.createEl("button", { text: "✨ Create with AI", cls: "mod-cta" });
+    const submitBtn = buttonsEl.createEl("button", { text: t("createWithAi"), cls: "mod-cta" });
     submitBtn.onclick = (): void => this.submit();
 
     this.inputEl.focus();
@@ -122,7 +129,7 @@ class QuickTaskModal extends Modal {
       this.close();
       this.onSubmit(input);
     } else {
-      new Notice("Please enter a task description");
+      new Notice(t("pleaseEnterDescription"));
     }
   }
 
@@ -192,14 +199,14 @@ class TaskReviewModal extends Modal {
     contentEl.empty();
     contentEl.addClass("gpt-task-manager-review-modal");
 
-    contentEl.createEl("h2", { text: "📋 Review Task" });
+    contentEl.createEl("h2", { text: t("reviewTask") });
 
     // Task details form
     const formEl = contentEl.createDiv({ cls: "task-review-form" });
 
     // Title
     const titleGroup = formEl.createDiv({ cls: "form-group" });
-    titleGroup.createEl("label", { text: "Title" });
+    titleGroup.createEl("label", { text: t("reviewTitle") });
     const titleInput = titleGroup.createEl("input", { type: "text", value: this.suggestion.title });
     titleInput.style.width = "100%";
     titleInput.addEventListener("change", () => {
@@ -208,7 +215,7 @@ class TaskReviewModal extends Modal {
 
     // Objective
     const objectiveGroup = formEl.createDiv({ cls: "form-group" });
-    objectiveGroup.createEl("label", { text: "Objective" });
+    objectiveGroup.createEl("label", { text: t("reviewObjective") });
     const objectiveInput = objectiveGroup.createEl("textarea", { text: this.suggestion.objective });
     objectiveInput.style.width = "100%";
     objectiveInput.rows = 3;
@@ -218,7 +225,7 @@ class TaskReviewModal extends Modal {
 
     // Importance
     const importanceGroup = formEl.createDiv({ cls: "form-group" });
-    importanceGroup.createEl("label", { text: "Why it matters" });
+    importanceGroup.createEl("label", { text: t("reviewImportance") });
     const importanceInput = importanceGroup.createEl("textarea", { text: this.suggestion.importance });
     importanceInput.style.width = "100%";
     importanceInput.rows = 2;
@@ -228,12 +235,12 @@ class TaskReviewModal extends Modal {
 
     // Epic Selection
     const epicGroup = formEl.createDiv({ cls: "form-group" });
-    epicGroup.createEl("label", { text: "Epic" });
+    epicGroup.createEl("label", { text: t("reviewEpic") });
     const epicSelect = epicGroup.createEl("select");
     epicSelect.style.width = "100%";
 
     // Add "None" option
-    const noneOption = epicSelect.createEl("option", { text: "-- No Epic --", value: "" });
+    const noneOption = epicSelect.createEl("option", { text: t("noEpic"), value: "" });
 
     // Add epic options
     for (const epic of this.epics) {
@@ -252,7 +259,7 @@ class TaskReviewModal extends Modal {
 
     // Priority
     const priorityGroup = formEl.createDiv({ cls: "form-group" });
-    priorityGroup.createEl("label", { text: "Priority" });
+    priorityGroup.createEl("label", { text: t("reviewPriority") });
     const prioritySelect = priorityGroup.createEl("select");
     prioritySelect.style.width = "100%";
 
@@ -290,14 +297,14 @@ class TaskReviewModal extends Modal {
     // Buttons
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
 
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = (): void => {
       this.resolved = true;
       this.close();
       this.onCancel();
     };
 
-    const confirmBtn = buttonsEl.createEl("button", { text: "✓ Create Task", cls: "mod-cta" });
+    const confirmBtn = buttonsEl.createEl("button", { text: t("createTask"), cls: "mod-cta" });
     confirmBtn.onclick = (): void => {
       this.resolved = true;
       this.close();
@@ -380,7 +387,7 @@ class BreakdownReviewModal extends Modal {
     // Buttons
     const buttonsEl = contentEl.createDiv({ cls: "modal-button-container" });
 
-    const cancelBtn = buttonsEl.createEl("button", { text: "Cancel" });
+    const cancelBtn = buttonsEl.createEl("button", { text: t("cancel") });
     cancelBtn.onclick = (): void => {
       this.resolved = true;
       this.close();
@@ -388,7 +395,7 @@ class BreakdownReviewModal extends Modal {
     };
 
     const confirmBtn = buttonsEl.createEl("button", { 
-      text: `✓ Create ${this.breakdown.tasks.length} Tasks`,
+      text: t("confirmCreateTasks", { count: this.breakdown.tasks.length }),
       cls: "mod-cta"
     });
     confirmBtn.onclick = (): void => {
@@ -417,6 +424,7 @@ export default class GptTaskManagerPlugin extends Plugin {
   settings: GptTaskManagerSettings = DEFAULT_SETTINGS;
   private contextCache: ContextCache | null = null;
   private activeCancellationToken: CancellationToken | null = null;
+  private kanbanService: KanbanIntegrationService | null = null;
 
   async onload(): Promise<void> {
     logger.info("Plugin", "Loading GPT Task Manager plugin...");
@@ -435,6 +443,16 @@ export default class GptTaskManagerPlugin extends Plugin {
     this.addRibbonIcon("mic", "Voice Task", () => {
       this.startVoiceTask();
     });
+
+    // Kanban ribbon icon (only if integration is enabled)
+    if (this.settings.enableKanbanIntegration) {
+      this.addRibbonIcon("layout-dashboard", "Open Kanban Board", () => {
+        this.openKanbanBoard();
+      });
+    }
+
+    // Initialize Kanban service
+    this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
 
     // Commands
     this.addCommand({
@@ -467,6 +485,32 @@ export default class GptTaskManagerPlugin extends Plugin {
       editorCallback: (editor: Editor, view: MarkdownView) => {
         this.createTaskFromSelection(editor);
       },
+    });
+
+    // ========== Kanban Integration Commands ==========
+
+    this.addCommand({
+      id: "gpt-kanban-open-all-tasks",
+      name: "Kanban: Open All Tasks Board",
+      callback: () => this.openKanbanBoard(),
+    });
+
+    this.addCommand({
+      id: "gpt-kanban-open-epic-board",
+      name: "Kanban: Open Board for Epic",
+      callback: () => this.showEpicKanbanModal(),
+    });
+
+    this.addCommand({
+      id: "gpt-kanban-open-project-board",
+      name: "Kanban: Open Board for Project",
+      callback: () => this.showProjectKanbanModal(),
+    });
+
+    this.addCommand({
+      id: "gpt-kanban-refresh-board",
+      name: "Kanban: Refresh Current Board",
+      callback: () => this.refreshCurrentKanbanBoard(),
     });
 
     logger.info("Plugin", "GPT Task Manager loaded successfully");
@@ -532,11 +576,17 @@ export default class GptTaskManagerPlugin extends Plugin {
       this.contextCache = null;
     }
 
+    // Update Kanban service settings if initialized
+    if (this.kanbanService) {
+      this.kanbanService.updateSettings(this.settings);
+    }
+
     logger.debug("Plugin", "Infrastructure initialized", {
       logLevel: this.settings.logLevel,
       locale: this.settings.uiLocale,
       cacheEnabled: this.settings.enableContextCache,
       rateLimitPerMinute: this.settings.rateLimitPerMinute,
+      kanbanEnabled: this.settings.enableKanbanIntegration,
     });
   }
 
@@ -554,28 +604,24 @@ export default class GptTaskManagerPlugin extends Plugin {
 
   /**
    * Get user context (cached if enabled)
+   * 
+   * Uses atomic loading to ensure a consistent snapshot across goals, projects,
+   * epics, and tasks. This avoids issues where the vault changes between
+   * individual load calls.
    */
   private getUserContext(): UserContext {
-    if (this.contextCache && this.settings.enableContextCache) {
-      const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
-      
-      const goals = this.contextCache.getGoals(cacheKey, () =>
-        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).goals
-      ) as UserContext["goals"];
-      
-      const projects = this.contextCache.getProjects(cacheKey, () =>
-        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).projects
-      ) as UserContext["projects"];
-      
-      const epics = this.contextCache.getEpics(cacheKey, () =>
-        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).epics
-      ) as UserContext["epics"];
-      
-      const activeTasks = this.contextCache.getTasks(cacheKey, () =>
-        loadUserContext(this.app, this.settings.goalsFolder, this.settings.projectsFolder, this.settings.epicsFolder, this.settings.tasksFolder).activeTasks
-      ) as UserContext["activeTasks"];
+    const cacheKey = `${this.settings.goalsFolder}|${this.settings.projectsFolder}|${this.settings.epicsFolder}|${this.settings.tasksFolder}`;
 
-      return { goals, projects, epics, activeTasks };
+    if (this.contextCache && this.settings.enableContextCache) {
+      return this.contextCache.getUserContext(cacheKey, () =>
+        loadUserContext(
+          this.app,
+          this.settings.goalsFolder,
+          this.settings.projectsFolder,
+          this.settings.epicsFolder,
+          this.settings.tasksFolder
+        )
+      );
     }
 
     return loadUserContext(
@@ -772,15 +818,22 @@ export default class GptTaskManagerPlugin extends Plugin {
 
       showNotice(`📝 Transcribed: "${transcription.substring(0, 50)}..."`);
 
-      // Parse voice input for quick extraction
+      // Parse voice input for quick extraction of metadata
       const voiceInput = parseVoiceTaskInput(transcription);
 
       // If smart suggestions enabled, process with GPT
       if (this.settings.enableSmartSuggestions) {
         await this.processQuickTask(transcription);
       } else {
-        // Create simple task from voice input
-        await this.createSimpleTask(voiceInput.taskTitle || transcription);
+        // Create simple task from voice input, using extracted metadata
+        await this.createSimpleTask(
+          voiceInput.taskTitle || transcription,
+          {
+            epic: voiceInput.epic || undefined,
+            project: voiceInput.project || undefined,
+            priority: voiceInput.priority || undefined,
+          }
+        );
       }
 
     } catch (error) {
@@ -872,14 +925,69 @@ export default class GptTaskManagerPlugin extends Plugin {
       }
 
       // Parse breakdown
-      const breakdown = parseTaskBreakdown(result.content);
+      let breakdown = parseTaskBreakdown(result.content);
 
       if (!breakdown || breakdown.tasks.length === 0) {
-        showErrorNotice("Failed to parse task breakdown from GPT response.");
+        showErrorNotice(t("errorBreakdownEmpty"));
         return;
       }
 
-      // Show review modal
+      // Guard against unexpectedly large breakdowns from GPT
+      if (breakdown.tasks.length > MAX_BREAKDOWN_TASKS) {
+        showNotice(t("errorBreakdownTooLarge", {
+          count: breakdown.tasks.length,
+          max: MAX_BREAKDOWN_TASKS,
+        }));
+        // Truncate to the limit
+        breakdown = {
+          tasks: breakdown.tasks.slice(0, MAX_BREAKDOWN_TASKS),
+        };
+      }
+
+      // For large breakdowns (more than 8 tasks), use batch confirmation modal
+      // to let users deselect or defer individual tasks
+      if (breakdown.tasks.length > 8) {
+        const batchModal = new BatchConfirmationModal(
+          this.app,
+          breakdown.tasks.map(task => ({ title: task.title })),
+          epic.name
+        );
+        const selectedItems = await batchModal.waitForConfirmation();
+
+        if (selectedItems.length === 0) {
+          showNotice(t("taskCreationCancelled"));
+          return;
+        }
+
+        // Filter breakdown to only selected tasks
+        const selectedTitles = new Set(selectedItems.map((item: BatchItem) => item.title));
+        breakdown = {
+          tasks: breakdown.tasks.filter(task => selectedTitles.has(task.title)),
+        };
+
+        // Re-map dependencies after filtering
+        // (dependencies pointing to removed tasks become null)
+        const oldIndexToNewIndex = new Map<number, number>();
+        let newIndex = 0;
+        for (let oldIndex = 0; oldIndex < result.content.length; oldIndex++) {
+          const task = parseTaskBreakdown(result.content)?.tasks[oldIndex];
+          if (task && selectedTitles.has(task.title)) {
+            oldIndexToNewIndex.set(oldIndex, newIndex);
+            newIndex++;
+          }
+        }
+        breakdown.tasks = breakdown.tasks.map(task => ({
+          ...task,
+          dependsOn: task.dependsOn !== null && oldIndexToNewIndex.has(task.dependsOn)
+            ? oldIndexToNewIndex.get(task.dependsOn)!
+            : null,
+        }));
+
+        await this.createBreakdownTasks(breakdown, epic);
+        return;
+      }
+
+      // Show review modal for smaller breakdowns
       new BreakdownReviewModal(
         this.app,
         breakdown,
@@ -961,15 +1069,32 @@ export default class GptTaskManagerPlugin extends Plugin {
 
   /**
    * Create a simple task without GPT (with confirmation)
+   * 
+   * @param title - The task title
+   * @param options - Optional metadata extracted from voice input or other sources
+   *                  (epic, project, priority)
    */
-  private async createSimpleTask(title: string): Promise<void> {
+  private async createSimpleTask(
+    title: string, 
+    options?: { epic?: string; project?: string; priority?: string }
+  ): Promise<void> {
     try {
+      const epicName = options?.epic || null;
+      const priority = options?.priority || this.settings.defaultPriority;
+
+      // Determine target folder based on epic
+      let targetFolder = this.settings.tasksFolder;
+      if (epicName) {
+        const sanitizedEpicName = sanitizeFilename(epicName, "Untitled Epic");
+        targetFolder = `${this.settings.tasksFolder}/active epic folder/${sanitizedEpicName}`;
+      }
+
       // Build summary for confirmation
       const summary: TaskCreationSummary = {
         title: title,
-        targetFolder: this.settings.tasksFolder,
-        epic: null,
-        priority: this.settings.defaultPriority,
+        targetFolder: targetFolder,
+        epic: epicName,
+        priority: priority,
         dependsOnTask: null,
       };
 
@@ -978,7 +1103,7 @@ export default class GptTaskManagerPlugin extends Plugin {
         this.app,
         [summary],
         "single",
-        null
+        epicName
       );
 
       if (!confirmed) {
@@ -986,12 +1111,22 @@ export default class GptTaskManagerPlugin extends Plugin {
         return;
       }
 
+      // Get epic metadata if epic specified
+      let epicMetadata = null;
+      if (epicName) {
+        epicMetadata = await getEpicMetadata(this.app, epicName, this.settings.epicsFolder);
+      }
+
       const params: CreateTaskParams = {
         title: title,
         objective: "",
         importance: "",
+        area: epicMetadata?.area || "",
+        goal: epicMetadata?.goal || "",
+        project: options?.project || epicMetadata?.project || "",
+        epic: epicName || "",
         status: this.settings.defaultStatus,
-        priority: this.settings.defaultPriority,
+        priority: priority,
         tags: ["tasks"],
       };
 
@@ -1000,7 +1135,7 @@ export default class GptTaskManagerPlugin extends Plugin {
         this.app,
         content,
         title,
-        null,
+        epicName,
         this.settings
       );
 
@@ -1020,7 +1155,7 @@ export default class GptTaskManagerPlugin extends Plugin {
     const selection = editor.getSelection();
 
     if (!selection) {
-      new Notice("Please select some text first");
+      new Notice(t("pleaseSelectText"));
       return;
     }
 
@@ -1029,6 +1164,199 @@ export default class GptTaskManagerPlugin extends Plugin {
     } else {
       await this.createSimpleTask(selection);
     }
+  }
+
+  // ========== Kanban Integration Methods ==========
+
+  /**
+   * Open the default Kanban board with all tasks
+   */
+  private async openKanbanBoard(): Promise<void> {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+
+    try {
+      showNotice(t("kanbanLoading"));
+      await this.kanbanService.openAllTasksBoard();
+    } catch (error) {
+      logger.error("Plugin", "Failed to open Kanban board", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to open Kanban board");
+    }
+  }
+
+  /**
+   * Show modal to select an Epic and open its Kanban board
+   */
+  private async showEpicKanbanModal(): Promise<void> {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+
+    try {
+      const epics = await this.kanbanService.getEpics();
+      
+      if (epics.length === 0) {
+        showErrorNotice(t("errorNoEpics"));
+        return;
+      }
+
+      // Use a simple suggest modal for epic selection
+      new EpicKanbanSelectModal(this.app, epics, async (epicName: string) => {
+        showNotice(t("kanbanLoadingEpic", { epic: epicName }));
+        await this.kanbanService!.openEpicBoard(epicName);
+      }).open();
+
+    } catch (error) {
+      logger.error("Plugin", "Failed to show epic Kanban modal", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to load epics");
+    }
+  }
+
+  /**
+   * Show modal to select a Project and open its Kanban board
+   */
+  private async showProjectKanbanModal(): Promise<void> {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+
+    try {
+      const projects = await this.kanbanService.getProjects();
+      
+      if (projects.length === 0) {
+        showErrorNotice(t("kanbanNoProjects"));
+        return;
+      }
+
+      // Use a simple suggest modal for project selection
+      new ProjectKanbanSelectModal(this.app, projects, async (projectName: string) => {
+        showNotice(t("kanbanLoadingProject", { project: projectName }));
+        await this.kanbanService!.openProjectBoard(projectName);
+      }).open();
+
+    } catch (error) {
+      logger.error("Plugin", "Failed to show project Kanban modal", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to load projects");
+    }
+  }
+
+  /**
+   * Refresh the currently open Kanban board
+   */
+  private async refreshCurrentKanbanBoard(): Promise<void> {
+    if (!this.settings.enableKanbanIntegration) {
+      showErrorNotice(t("kanbanNotEnabled"));
+      return;
+    }
+
+    // Check if current view is a Kanban board
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      showNotice(t("kanbanNoActiveBoard"));
+      return;
+    }
+
+    // Check if file is a Kanban board
+    const content = await this.app.vault.read(activeFile);
+    if (!content.includes("kanban-plugin:") && !content.includes("gpt-task-manager: true")) {
+      showNotice(t("kanbanNotABoard"));
+      return;
+    }
+
+    if (!this.kanbanService) {
+      this.kanbanService = new KanbanIntegrationService(this.app, this.settings);
+    }
+
+    try {
+      // Determine the board type and refresh
+      const boardName = activeFile.basename.replace(" Board", "");
+      
+      // Query all tasks and regenerate the board
+      const tasks = await this.kanbanService.queryTasks({ includeCompleted: true });
+      await this.kanbanService.createOrUpdateBoard(activeFile.basename, tasks, { overwrite: true });
+      
+      showSuccessNotice(t("kanbanRefreshed"));
+    } catch (error) {
+      logger.error("Plugin", "Failed to refresh Kanban board", { error: error instanceof Error ? error.message : "Unknown" });
+      showErrorNotice(error instanceof Error ? error.message : "Failed to refresh board");
+    }
+  }
+
+  /**
+   * Public method for external plugins to get the Kanban service
+   */
+  public getKanbanService(): KanbanIntegrationService | null {
+    return this.kanbanService;
+  }
+}
+
+/**
+ * Modal for selecting an Epic for Kanban board
+ */
+class EpicKanbanSelectModal extends FuzzySuggestModal<string> {
+  private epics: string[];
+  private onChoose: (epic: string) => void;
+
+  constructor(app: App, epics: string[], onChoose: (epic: string) => void) {
+    super(app);
+    this.epics = epics;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select an Epic to view in Kanban...");
+  }
+
+  getItems(): string[] {
+    return this.epics;
+  }
+
+  getItemText(item: string): string {
+    return item;
+  }
+
+  onChooseItem(item: string, evt: MouseEvent | KeyboardEvent): void {
+    this.onChoose(item);
+  }
+}
+
+/**
+ * Modal for selecting a Project for Kanban board
+ */
+class ProjectKanbanSelectModal extends FuzzySuggestModal<string> {
+  private projects: string[];
+  private onChoose: (project: string) => void;
+
+  constructor(app: App, projects: string[], onChoose: (project: string) => void) {
+    super(app);
+    this.projects = projects;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select a Project to view in Kanban...");
+  }
+
+  getItems(): string[] {
+    return this.projects;
+  }
+
+  getItemText(item: string): string {
+    return item;
+  }
+
+  onChooseItem(item: string, evt: MouseEvent | KeyboardEvent): void {
+    this.onChoose(item);
   }
 }
 
